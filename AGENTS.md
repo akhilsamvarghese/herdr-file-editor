@@ -38,7 +38,7 @@ The mod operates in two distinct modes based on whether `props().file` is provid
      - Copy button writing text to clipboard with toast notification.
      - Refresh button reloading from disk.
    - Code rendering uses `EditorState.new` with syntax highlighting from `theme()` and font settings.
-   - Markdown rendering uses `TextView.markdown(chunk.id, chunk.text)` with chunk splitting (`splitMarkdownChunks`) and deterministic `contentHash` IDs (`md-${file}-${i}-${hash}`).
+   - Markdown rendering is GitHub-style and built in `mods/file-editor/markdown-view.js`: `parseMarkdownBlocks` (file-logic.js) turns the source into blocks, which are drawn as headings with rules, code boxes, bordered tables, quote bars, list and task markers. Inline text (emphasis, code, links) goes through `TextView.markdown`, which takes no styling of its own.
 
 ---
 
@@ -59,7 +59,7 @@ Run the automated test suite and mod validator:
 herdr-app check mods/file-editor && node --test test/
 ```
 
-- `mods/file-editor/file-logic.js`: Pure functions for path splitting, language detection, view mode defaults, file text preparation, markdown chunking, syntax theming, location resolution, and tab resolution.
+- `mods/file-editor/file-logic.js`: Pure functions for path splitting, language detection, view mode defaults, file text preparation, Markdown block parsing, syntax theming, location resolution, and tab resolution.
 - `test/file-logic.test.js`: Unit tests verifying contract, edge cases, and boundaries with `node:test` and `node:assert/strict`.
 
 ---

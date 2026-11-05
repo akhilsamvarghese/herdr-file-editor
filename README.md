@@ -18,9 +18,8 @@ Instead of opening raw code files inside the narrow Files panel, `file-editor` o
   - Powered by `EditorState` and `Editor` with line numbers, code folding, font family/size configuration, and colors derived dynamically from your active Herdr `theme()`.
   - Supports JavaScript, TypeScript, JSX/TSX, Python, Rust, Go, C/C++, Shell, HTML, CSS, JSON, YAML, TOML, Dockerfile, Makefile, and more.
 - **Rendered Markdown Preview**:
-  - For `.md`, `.markdown`, and `.mdx` files, defaults to a rendered Markdown preview (`TextView.markdown`) inside a centered, readable reading column.
+  - For `.md`, `.markdown`, and `.mdx` files, defaults to a GitHub-style rendered preview (headings, code, tables, quotes, task lists) inside a centered, readable reading column.
   - Supports switching seamlessly between **Preview** and **Code** modes via a segmented header switcher.
-  - Splits long documents into stable, content-hashed chunks (`splitMarkdownChunks` + `contentHash`) for instant incremental updates.
 - **Toolbar Craft**:
   - **Header Info**: Bold basename, truncated folder path, line count & language pill, and `Read-only` badge.
   - **Wrap Toggle**: Toggles soft line wrapping on and off, remembered in shared settings (`file-editor.wrap`).

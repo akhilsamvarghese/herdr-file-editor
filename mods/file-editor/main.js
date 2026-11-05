@@ -6,12 +6,12 @@
  *
  * Mode 2 (File Editor Tab): When props().file is set, renders a full-pane editor tab with:
  * - Syntax highlighting (Editor / EditorState) for code and configuration files.
- * - Rendered Markdown preview (TextView.markdown) with chunking for .md / .markdown / .mdx.
+ * - GitHub-style Markdown preview (markdown-view.js) for .md / .markdown / .mdx.
  * - Soft-wrap toggle, copy button, file reload, and live disk watching.
  */
 
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, Editor, EditorState, TextView } from "gpui-base";
+import { v_flex, h_flex, Editor, EditorState } from "gpui-base";
 import {
   spaces,
   panes,
@@ -36,13 +36,12 @@ import {
   defaultViewMode,
   prepareFileText,
   shouldReloadWatchedFile,
-  contentHash,
-  splitMarkdownChunks,
   buildSyntaxTheme,
   resolveLocationState,
   resolveFileTab,
   mergeOpenTabEntry,
 } from "./file-logic.js";
+import { renderMarkdownDocument } from "./markdown-view.js";
 
 /** Max entries displayed per directory and total tree bounds. */
 const PER_FOLDER = 500;
@@ -600,33 +599,30 @@ export default class FileEditor extends View {
   }
 
   /**
-   * Renders the rendered Markdown view using chunked TextView.markdown.
+   * Renders the Markdown preview as a GitHub-style document, centered in a readable column.
    *
    * @param {Record<string, string>} t
    * @returns {import("gpui-kit").Element}
    */
   renderMarkdownView(t) {
-    const chunks = splitMarkdownChunks(this.preparedText ?? "");
+    const codeFont = settings()?.font_family ?? null;
     return v_flex()
       .id("file-editor-markdown")
       .flex_1()
       .min_h(0)
       .overflow_y_scrollbar()
-      .px(28)
-      .py(20)
+      .bg(t.background)
+      .px(32)
+      .py(24)
       .child(
-        div()
+        v_flex()
           .w_full()
-          .max_w(880)
-          .text_size(14)
-          .line_height("24px")
-          .text_color(t.foreground)
-          .children(
-            chunks.map((chunkText, i) => {
-              const hash = contentHash(chunkText);
-              const chunkId = `md-${this.file}-${i}-${hash}`;
-              return TextView.markdown(chunkId, chunkText).selectable(true);
-            })
+          .items_center()
+          .child(
+            div()
+              .w_full()
+              .max_w(880)
+              .child(renderMarkdownDocument(this.preparedText ?? "", { t, codeFont, idPrefix: `md-${this.file}` }))
           )
       );
   }

@@ -8,8 +8,7 @@ import {
   defaultViewMode,
   prepareFileText,
   shouldReloadWatchedFile,
-  contentHash,
-  splitMarkdownChunks,
+  parseMarkdownBlocks,
   buildSyntaxTheme,
   resolveLocationState,
   resolveFileTab,
@@ -242,72 +241,6 @@ test("shouldReloadWatchedFile - filters batch change events accurately", () => {
 
   // Multiple changes with one relevant
   assert.equal(shouldReloadWatchedFile([`${root}/package.json`, `${root}/${file}`], root, file), true);
-});
-
-test("contentHash - produces deterministic djb2 hashes", () => {
-  const h1 = contentHash("const x = 1;");
-  const h2 = contentHash("const x = 1;");
-  const h3 = contentHash("const x = 2;");
-
-  assert.equal(typeof h1, "string");
-  assert.equal(h1.length > 0, true);
-  assert.equal(h1, h2);
-  assert.notEqual(h1, h3);
-
-  assert.equal(contentHash(""), "45h");
-  assert.equal(contentHash(null), "45h");
-});
-
-test("splitMarkdownChunks - splits markdown and preserves content across syntax edge cases", () => {
-  // Empty & non-string
-  assert.deepEqual(splitMarkdownChunks(""), [""]);
-  assert.deepEqual(splitMarkdownChunks(null), [""]);
-
-  // Short markdown remains single chunk
-  const shortMd = "# Title\n\nParagraph 1.\n\nParagraph 2.";
-  assert.deepEqual(splitMarkdownChunks(shortMd), [shortMd]);
-
-  // CRLF stays in one chunk
-  const crlfMd = "# Title\r\n\r\nParagraph with CRLF.";
-  assert.deepEqual(splitMarkdownChunks(crlfMd), [crlfMd]);
-
-  // Footnote bailout
-  const footnoteMd = "A line with[^1] a footnote.";
-  assert.deepEqual(splitMarkdownChunks(footnoteMd), [footnoteMd]);
-
-  // Document-wide syntax bailouts (HTML block, math, container)
-  const htmlMd = "<div>\ncustom block\n</div>";
-  assert.deepEqual(splitMarkdownChunks(htmlMd), [htmlMd]);
-
-  const mathMd = "$$\nx^2 + y^2 = z^2\n$$";
-  assert.deepEqual(splitMarkdownChunks(mathMd), [mathMd]);
-
-  const containerMd = "::: info\nNotice\n:::";
-  assert.deepEqual(splitMarkdownChunks(containerMd), [containerMd]);
-
-  // Long markdown (> 1200 chars) splits at blank lines
-  const para1 = "Alpha ".repeat(250) + "\n\n";
-  const para2 = "Beta ".repeat(250) + "\n\n";
-  const para3 = "Gamma ".repeat(50);
-  const full = para1 + para2 + para3;
-  const chunks = splitMarkdownChunks(full);
-
-  assert.equal(chunks.length > 1, true);
-  assert.equal(chunks.join(""), full);
-
-  // Backtick and Tilde code fences are preserved intact
-  const tildeFence = "~~~sh\necho 'hello'\n".repeat(80) + "~~~\n\n";
-  const tildeFull = tildeFence + para2;
-  const tildeChunks = splitMarkdownChunks(tildeFull);
-  assert.equal(tildeChunks.join(""), tildeFull);
-
-  // Unclosed fence does not crash
-  const unclosed = "```js\nconst a = 1;\n" + "x ".repeat(600);
-  assert.deepEqual(splitMarkdownChunks(unclosed), [unclosed]);
-
-  // List continuation after blank line does not break block
-  const listContinuation = "1. First item\n\n   Continuation paragraph of first item\n\n2. Second item";
-  assert.deepEqual(splitMarkdownChunks(listContinuation), [listContinuation]);
 });
 
 test("buildSyntaxTheme - maps ANSI colors correctly with fallbacks", () => {
@@ -564,4 +497,56 @@ test("resolveLocationState - focusing a mod pane does not borrow its cwd (new-sp
     previousSpace: "space-old",
   });
   assert.equal(rNoTerm.cwd, "/Users/me");
+});
+
+test("parseMarkdownBlocks - headings, paragraphs, rules and quotes", () => {
+  const blocks = parseMarkdownBlocks("# Title\n\nSome *soft* text\nwrapped.\n\n---\n\n> quoted\n> more");
+  assert.deepEqual(blocks[0], { type: "heading", level: 1, text: "Title" });
+  assert.deepEqual(blocks[1], { type: "paragraph", text: "Some *soft* text wrapped." });
+  assert.deepEqual(blocks[2], { type: "hr" });
+  assert.equal(blocks[3].type, "quote");
+  assert.deepEqual(blocks[3].blocks, [{ type: "paragraph", text: "quoted more" }]);
+});
+
+test("parseMarkdownBlocks - fenced code keeps its body verbatim and ignores markdown inside", () => {
+  const blocks = parseMarkdownBlocks("```js\n# not a heading\n  indented **x**\n```\nafter");
+  assert.deepEqual(blocks[0], { type: "code", lang: "js", text: "# not a heading\n  indented **x**" });
+  assert.equal(blocks[1].type, "paragraph");
+});
+
+test("parseMarkdownBlocks - unclosed fence runs to end of document", () => {
+  const blocks = parseMarkdownBlocks("~~~\ncode");
+  assert.deepEqual(blocks, [{ type: "code", lang: "", text: "code" }]);
+});
+
+test("parseMarkdownBlocks - nested and task lists", () => {
+  const blocks = parseMarkdownBlocks("- [x] done\n  - child\n- [ ] todo\n\n1. first\n2. second");
+  assert.equal(blocks[0].type, "list");
+  assert.equal(blocks[0].ordered, false);
+  assert.equal(blocks[0].items.length, 2);
+  assert.equal(blocks[0].items[0].checked, true);
+  assert.equal(blocks[0].items[1].checked, false);
+  assert.equal(blocks[0].items[0].blocks[1].type, "list");
+  assert.equal(blocks[1].type, "list");
+  assert.equal(blocks[1].ordered, true);
+  assert.equal(blocks[1].start, 1);
+  assert.equal(blocks[1].items.length, 2);
+});
+
+test("parseMarkdownBlocks - tables with alignment and escaped pipes", () => {
+  const blocks = parseMarkdownBlocks("| a | b |\n|:-|-:|\n| 1 | x \\| y |");
+  assert.equal(blocks[0].type, "table");
+  assert.deepEqual(blocks[0].align, ["left", "right"]);
+  assert.equal(blocks[0].header.length, 2);
+  assert.equal(blocks[0].rows[0][1], "x | y");
+});
+
+test("parseMarkdownBlocks - a line of pipes without a delimiter row is a paragraph", () => {
+  const blocks = parseMarkdownBlocks("a | b\nc");
+  assert.equal(blocks[0].type, "paragraph");
+});
+
+test("parseMarkdownBlocks - empty and non-string input", () => {
+  assert.deepEqual(parseMarkdownBlocks(""), []);
+  assert.deepEqual(parseMarkdownBlocks(null), []);
 });

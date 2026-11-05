@@ -288,90 +288,203 @@ export function shouldReloadWatchedFile(changedPaths, root, file) {
   return false;
 }
 
-/**
- * djb2 string hash, base-36. Cheap and stable across runs.
- *
- * @param {string} str
- * @returns {string}
- */
-export function contentHash(str) {
-  const source = typeof str === "string" ? str : "";
-  let hash = 5381;
-  for (let i = 0; i < source.length; i++) {
-    hash = ((hash << 5) + hash + source.charCodeAt(i)) | 0;
-  }
-  return (hash >>> 0).toString(36);
-}
+/** A list item marker: indent, bullet or number, then whitespace. */
+const LIST_ITEM = /^( *)([-*+]|\d{1,9}[.)])( +)(.*)$/;
 
-/** Minimum characters before closing a Markdown chunk. */
-const MIN_CHUNK_CHARS = 1200;
+/** A code fence opener: up to 3 spaces of indent, then 3+ backticks or tildes, then an info string. */
+const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})\s*([^\s`]*)/;
 
-/** Document-wide syntax a split could break: reference definitions, HTML blocks, containers, math. */
-const DOCUMENT_WIDE = /^ {0,3}(?:\[[^\]\n]+\]:|<[A-Za-z!?/]|:::|\$\$)/m;
+/** ATX heading: 1-6 hashes, then text, with an optional closing sequence. */
+const HEADING = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$/;
 
-/** A code fence line: up to 3 spaces of indent, then 3+ backticks or tildes. */
-const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+/** Thematic break: three or more of the same rule character. */
+const RULE = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
 
-/** A line that continues the block above it: indented, or a list item marker. */
-const CONTINUATION = /^(?:\s|(?:[-*+]|\d+[.)])(?:\s|$))/;
+/** Block quote marker. */
+const QUOTE = /^ {0,3}>/;
+
+/** Table delimiter row: pipes, colons and dashes, with at least one dash. */
+const TABLE_DELIMITER = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
 
 /**
- * Greedy grouping of cut pieces into bounded chunks.
- *
- * @param {string[]} pieces
- * @returns {string[]}
- */
-function groupPieces(pieces) {
-  const chunks = [];
-  let current = "";
-  for (let i = 0; i < pieces.length; i++) {
-    current += pieces[i];
-    const isFinal = i === pieces.length - 1;
-    if (!isFinal && current.length >= MIN_CHUNK_CHARS) {
-      chunks.push(current);
-      current = "";
-    }
-  }
-  chunks.push(current);
-  return chunks;
-}
-
-/**
- * Splits Markdown into chunks that each render independently.
- * Breaks only at clean blank lines outside code fences.
+ * Parses Markdown source into a block tree for a GitHub-style renderer.
+ * Blocks: heading, paragraph, code, quote (nested blocks), list (items with nested
+ * blocks and task state), table, hr. Inline Markdown stays raw in `text` fields.
  *
  * @param {string} text
+ * @returns {MarkdownBlock[]}
+ */
+export function parseMarkdownBlocks(text) {
+  const source = typeof text === "string" ? text : "";
+  return parseBlocks(source.replace(/\r\n?/g, "\n").split("\n"));
+}
+
+/**
+ * @typedef {{ type: "heading", level: number, text: string }
+ *   | { type: "paragraph", text: string }
+ *   | { type: "code", lang: string, text: string }
+ *   | { type: "quote", blocks: MarkdownBlock[] }
+ *   | { type: "list", ordered: boolean, start: number, items: Array<{ checked: boolean | null, blocks: MarkdownBlock[] }> }
+ *   | { type: "table", align: string[], header: string[], rows: string[][] }
+ *   | { type: "hr" }} MarkdownBlock
+ */
+
+/**
+*/
+
+/** @returns {number} Count of leading spaces (tabs count as 4). */
+function indentOf(line) {
+  let n = 0;
+  for (const ch of line) {
+    if (ch === " ") n++;
+    else if (ch === "\t") n += 4;
+    else break;
+  }
+  return n;
+}
+
+/**
+ * Splits one table row into trimmed cell sources.
+ *
+ * @param {string} line
  * @returns {string[]}
  */
-export function splitMarkdownChunks(text) {
-  const source = typeof text === "string" ? text : "";
-  if (source === "" || source.includes("\r") || source.includes("[^") || DOCUMENT_WIDE.test(source)) {
-    return [source];
-  }
-  const lines = source.split("\n");
-  const pieces = [];
-  let start = 0;
-  let fence = null;
-  for (let i = 0; i < lines.length; i++) {
-    const m = FENCE.exec(lines[i]);
+function splitRow(line) {
+  let s = line.trim();
+  if (s.startsWith("|")) s = s.slice(1);
+  if (s.endsWith("|") && !s.endsWith("\\|")) s = s.slice(0, -1);
+  return s.split(/(?<!\\)\|/).map((cell) => cell.trim().replace(/\\\|/g, "|"));
+}
+
+/**
+ * True when a line starts a block that interrupts a paragraph.
+ *
+ * @param {string} line
+ * @returns {boolean}
+ */
+function startsBlock(line) {
+  return (
+    FENCE_OPEN.test(line) ||
+    HEADING.test(line) ||
+    RULE.test(line) ||
+    QUOTE.test(line) ||
+    (LIST_ITEM.test(line) && line.trim() !== "")
+  );
+}
+
+/**
+ * Parses a list of source lines into blocks.
+ *
+ * @param {string[]} lines
+ * @returns {MarkdownBlock[]}
+ */
+function parseBlocks(lines) {
+  const blocks = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.trim() === "") {
+      i++;
+      continue;
+    }
+
+    const fence = FENCE_OPEN.exec(line);
     if (fence) {
-      if (m && m[1][0] === fence.char && m[1].length >= fence.length && m[2].trim() === "") {
-        fence = null;
+      const marker = fence[1];
+      const closer = new RegExp(`^ {0,3}${marker[0] === "`" ? "`" : "~"}{${marker.length},}[ \\t]*$`);
+      const body = [];
+      i++;
+      while (i < lines.length && !closer.test(lines[i])) {
+        body.push(lines[i]);
+        i++;
       }
+      i++;
+      blocks.push({ type: "code", lang: fence[2] || "", text: body.join("\n") });
       continue;
     }
-    if (m && (m[1][0] === "~" || !m[2].includes("`"))) {
-      fence = { char: m[1][0], length: m[1].length };
+
+    const heading = HEADING.exec(line);
+    if (heading) {
+      blocks.push({ type: "heading", level: heading[1].length, text: heading[2] || "" });
+      i++;
       continue;
     }
-    if (lines[i].trim() !== "") continue;
-    const next = lines[i + 1];
-    if (next === undefined || next.trim() === "" || CONTINUATION.test(next)) continue;
-    pieces.push(`${lines.slice(start, i + 1).join("\n")}\n`);
-    start = i + 1;
+
+    if (RULE.test(line)) {
+      blocks.push({ type: "hr" });
+      i++;
+      continue;
+    }
+
+    if (QUOTE.test(line)) {
+      const inner = [];
+      while (i < lines.length && QUOTE.test(lines[i])) {
+        inner.push(lines[i].replace(/^ {0,3}> ?/, ""));
+        i++;
+      }
+      blocks.push({ type: "quote", blocks: parseBlocks(inner) });
+      continue;
+    }
+
+    if (line.includes("|") && i + 1 < lines.length && TABLE_DELIMITER.test(lines[i + 1]) && lines[i + 1].includes("-")) {
+      const align = splitRow(lines[i + 1]).map((cell) =>
+        cell.startsWith(":") && cell.endsWith(":") ? "center" : cell.endsWith(":") ? "right" : "left"
+      );
+      const header = splitRow(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && lines[i].trim() !== "" && lines[i].includes("|")) {
+        rows.push(splitRow(lines[i]));
+        i++;
+      }
+      blocks.push({ type: "table", align, header, rows });
+      continue;
+    }
+
+    const item = LIST_ITEM.exec(line);
+    if (item && indentOf(line) < 4) {
+      const indent = indentOf(line);
+      const ordered = /\d/.test(item[2][0]);
+      const list = { type: "list", ordered, start: ordered ? Number.parseInt(item[2], 10) : 1, items: [] };
+      while (i < lines.length) {
+        const m = LIST_ITEM.exec(lines[i]);
+        if (!m || indentOf(lines[i]) !== indent || /\d/.test(m[2][0]) !== ordered) break;
+        const contentIndent = m[1].length + m[2].length + m[3].length;
+        const body = [m[4]];
+        i++;
+        while (i < lines.length) {
+          const next = lines[i];
+          if (next.trim() === "") {
+            let j = i + 1;
+            while (j < lines.length && lines[j].trim() === "") j++;
+            if (j < lines.length && indentOf(lines[j]) > indent) {
+              body.push("");
+              i++;
+              continue;
+            }
+            break;
+          }
+          if (indentOf(next) <= indent) break;
+          body.push(next.slice(Math.min(indentOf(next), contentIndent)));
+          i++;
+        }
+        const task = /^\[([ xX])\]\s+(.*)$/.exec(body[0]);
+        if (task) body[0] = task[2];
+        list.items.push({ checked: task ? task[1].toLowerCase() === "x" : null, blocks: parseBlocks(body) });
+      }
+      blocks.push(list);
+      continue;
+    }
+
+    const para = [line.trim()];
+    i++;
+    while (i < lines.length && lines[i].trim() !== "" && !startsBlock(lines[i])) {
+      para.push(lines[i].trim());
+      i++;
+    }
+    blocks.push({ type: "paragraph", text: para.join(" ") });
   }
-  pieces.push(lines.slice(start).join("\n"));
-  return groupPieces(pieces);
+  return blocks;
 }
 
 /**

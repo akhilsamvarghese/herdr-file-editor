@@ -18,7 +18,7 @@ Inside any Herdr sidebar, split pane, or dedicated tab:
   - **Copy Button**: One-click clipboard copy button (`copy.svg`) with an instant toast notification.
   - **Refresh Button**: One-click reload button (`refresh.svg`) that re-reads file content from disk.
   - **Code View**: Full-pane read-only editor with line numbers, code folding, theme-matched syntax highlighting, and user font settings.
-  - **Markdown Preview**: Rendered Markdown with 14px typography and 24px line height in a centered, readable 880px max-width reading column.
+  - **Markdown Preview**: GitHub-style rendering (headings with rules, code boxes, bordered tables, quote bars, task lists) in a centered, readable 880px max-width column.
   - **Edge State Banners**: Friendly centered messages for deleted/missing files (`"This file is no longer available"`), binary files (`"Binary file · no text preview"`), or files truncated past 400,000 characters.
 
 ## How it behaves
@@ -43,10 +43,10 @@ Inside any Herdr sidebar, split pane, or dedicated tab:
 
 - `mods/file-editor/`:
   - `main.js`: Main dual-mode View component handling tree navigation, tab management, toolbar interactions, and editor rendering.
-  - `file-logic.js`: Pure, deterministic helpers for language mapping, markdown chunking, location resolution, and tab deduplication.
+  - `file-logic.js`: Pure, deterministic helpers for language mapping, Markdown block parsing, location resolution, and tab deduplication.
   - `mod.json`: Herdr mod manifest (`"place": "none"`).
   - Vector SVG icons: `chevron-down.svg`, `chevron-right.svg`, `folder.svg`, `file.svg`, `copy.svg`, `refresh.svg`.
-- `gpui-kit` & `gpui-base`: Native GPU elements, flex layouts, `Editor`, `EditorState`, and `TextView.markdown`.
+- `gpui-kit` & `gpui-base`: Native GPU elements, flex layouts, `Editor`, `EditorState`, and `TextView.markdown` for inline text.
 - `herdr` runtime API: `readTextFile`, `watchFolder`, `theme()`, `settings()`, `spaces()`, `panes()`, `focused()`, `run()`, `shared()`, `setShared()`, and `notify()`.
 
 ## Watch out
