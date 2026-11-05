@@ -21,6 +21,10 @@ export function splitPathInfo(filePath) {
   const dir = lastSlash >= 0 ? normalized.slice(0, lastSlash) : "";
 
   let ext = "";
+  if (base === "." || base === "..") {
+    return { base, dir, ext: "" };
+  }
+
   const lastDot = base.lastIndexOf(".");
   if (lastDot > 0 && lastDot < base.length - 1) {
     ext = base.slice(lastDot + 1).toLowerCase();
@@ -30,6 +34,38 @@ export function splitPathInfo(filePath) {
   }
 
   return { base, dir, ext };
+}
+
+/**
+ * Normalizes root and file path parameters for tab mode initialization.
+ * Strips redundant leading/trailing slashes and extracts root when an absolute file is passed.
+ *
+ * @param {Record<string, any>} [props]
+ * @returns {{ root: string, file: string }}
+ */
+export function normalizeTabTarget(props) {
+  const p = props || {};
+  let rawRoot = typeof p.folder === "string" ? p.folder : typeof p.cwd === "string" ? p.cwd : "";
+  let rawFile = typeof p.file === "string" ? p.file : "";
+
+  rawRoot = rawRoot.replace(/\\/g, "/").replace(/\/+$/, "");
+  rawFile = rawFile.replace(/\\/g, "/");
+
+  if (!rawRoot && rawFile.startsWith("/")) {
+    const lastSlash = rawFile.lastIndexOf("/");
+    if (lastSlash > 0) {
+      rawRoot = rawFile.slice(0, lastSlash);
+      rawFile = rawFile.slice(lastSlash + 1);
+    }
+  }
+
+  if (rawRoot && rawFile.startsWith(rawRoot + "/")) {
+    rawFile = rawFile.slice(rawRoot.length + 1);
+  }
+
+  rawFile = rawFile.replace(/^\/+/, "");
+
+  return { root: rawRoot, file: rawFile };
 }
 
 /**
@@ -163,7 +199,7 @@ export const DEFAULT_MAX_CHARS = 400000;
 
 /**
  * Prepares file text for rendering: checks for missing file, binary null bytes,
- * line count, and truncates large files exceeding maxChars.
+ * line count (subtracting trailing newline to match Editor gutter count), and truncates large files.
  *
  * @param {string | null | undefined} rawText
  * @param {number} [maxChars=400000]
@@ -206,7 +242,7 @@ export function prepareFileText(rawText, maxChars = DEFAULT_MAX_CHARS) {
     };
   }
 
-  const lineCount = rawText === "" ? 0 : rawText.split("\n").length;
+  const lineCount = rawText === "" ? 0 : rawText.split("\n").length - Number(rawText.endsWith("\n"));
   const isTruncated = rawText.length > maxChars;
   const text = isTruncated
     ? `${rawText.slice(0, maxChars)}\n… (file truncated)`
@@ -219,6 +255,37 @@ export function prepareFileText(rawText, maxChars = DEFAULT_MAX_CHARS) {
     isBinary: false,
     isTruncated,
   };
+}
+
+/**
+ * Evaluates whether a batch of changed filesystem paths requires reloading an open file tab.
+ *
+ * @param {string[] | null | undefined} changedPaths
+ * @param {string | null | undefined} root
+ * @param {string | null | undefined} file
+ * @returns {boolean}
+ */
+export function shouldReloadWatchedFile(changedPaths, root, file) {
+  if (!Array.isArray(changedPaths) || changedPaths.length === 0) {
+    return true;
+  }
+  const normRoot = typeof root === "string" ? root.replace(/\\/g, "/").replace(/\/+$/, "") : "";
+  const normFile = typeof file === "string" ? file.replace(/\\/g, "/").replace(/^\/+/, "") : "";
+  const normFull = normRoot ? `${normRoot}/${normFile}` : normFile;
+
+  for (const p of changedPaths) {
+    if (typeof p !== "string") continue;
+    const normP = p.replace(/\\/g, "/").replace(/\/+$/, "");
+    // Batch overflow or root change:
+    if (normP === normRoot) return true;
+    // Exact file match:
+    if (normP === normFull) return true;
+    // Parent directory of the file was modified:
+    if (normFull.startsWith(normP + "/")) return true;
+    // Changed path is inside the file:
+    if (normP.startsWith(normFull + "/")) return true;
+  }
+  return false;
 }
 
 /**
@@ -329,17 +396,28 @@ export function buildSyntaxTheme(themeObj = {}) {
 /**
  * Resolves the workspace location honoring active space, pinned location, focused cwd
  * strictly when focused space matches active space, and space folder fallback.
+ * Retains previousCwd when focusing a mod tab in the same space.
  *
  * @param {{
  *   props?: Record<string, any>,
  *   spaces?: Array<{ id: string, folder?: string, machine?: string | null, active?: boolean }>,
  *   focused?: { space?: string, pane?: string | null, terminal?: string | null, cwd?: string | null } | null,
- *   panes?: Array<{ pane: string, cwd?: string | null }>,
- *   pinnedLocations?: Record<string, string>
+ *   panes?: Array<{ pane: string, cwd?: string | null, terminal?: string | null }>,
+ *   pinnedLocations?: Record<string, string>,
+ *   previousCwd?: string | null,
+ *   previousSpace?: string | null
  * }} options
  * @returns {{ cwd: string | null, on: string | null, space: string | null }}
  */
-export function resolveLocationState({ props, spaces, focused, panes, pinnedLocations }) {
+export function resolveLocationState({
+  props,
+  spaces,
+  focused,
+  panes,
+  pinnedLocations,
+  previousCwd = null,
+  previousSpace = null,
+}) {
   const p = props || {};
   const spaceList = Array.isArray(spaces) ? spaces : [];
   const space = spaceList.find((s) => s.active) || null;
@@ -350,48 +428,41 @@ export function resolveLocationState({ props, spaces, focused, panes, pinnedLoca
   const isFocusedInActiveSpace = Boolean(f && spaceId && f.space === spaceId);
 
   let focusedCwd = null;
+  let isModPane = false;
   if (isFocusedInActiveSpace) {
     if (f.pane && Array.isArray(panes)) {
       const matchedPane = panes.find((item) => item.pane === f.pane);
+      isModPane = Boolean(matchedPane && !matchedPane.terminal);
       focusedCwd = matchedPane?.cwd || f.cwd || null;
     } else {
       focusedCwd = f.cwd || null;
     }
   }
 
-  const cwd = p.folder || p.cwd || pinned || focusedCwd || space?.folder || null;
+  // Preserve previousCwd when focusing a mod pane or pane with no cwd in the same active space
+  let retainedCwd = null;
+  if (isFocusedInActiveSpace && (!focusedCwd || isModPane)) {
+    if (previousSpace && spaceId && previousSpace === spaceId && previousCwd) {
+      retainedCwd = previousCwd;
+    }
+  }
 
-  const on =
-    p.on !== undefined
-      ? p.on
-      : f?.pane === null
-        ? f?.terminal?.includes("/")
-          ? f.terminal.split("/")[0]
-          : null
-        : space?.machine ?? null;
+  const cwd = p.folder || p.cwd || pinned || focusedCwd || retainedCwd || space?.folder || null;
+
+  const remoteFromTerminal =
+    isFocusedInActiveSpace && f?.pane === null && typeof f?.terminal === "string" && f.terminal.includes("/")
+      ? f.terminal.split("/")[0]
+      : null;
+  const on = p.on !== undefined ? p.on : remoteFromTerminal || (space?.machine ?? null);
 
   return { cwd, on, space: spaceId };
 }
 
 /**
- * Convenience wrapper for resolveLocationState.
- *
- * @param {Record<string, any>} [props]
- * @param {Array<any>} [spaces]
- * @param {any} [focused]
- * @param {Array<any>} [panes]
- * @param {Record<string, string>} [pinnedLocations]
- * @returns {{ cwd: string | null, on: string | null, space: string | null }}
- */
-export function resolveLocation(props, spaces, focused, panes, pinnedLocations) {
-  return resolveLocationState({ props, spaces, focused, panes, pinnedLocations });
-}
-
-/**
  * Resolves or generates the target tab for a given file.
- * Checks for an existing active non-settled tab matching this file.
- * If not found, determines a unique tab title (disambiguating with parent folder if needed),
- * and updates openTabs tracking.
+ * Preserves tabs belonging to other roots/spaces during pruning.
+ * Matches strictly by tabId once tabId is known.
+ * Disambiguates colliding tab names iteratively with counters.
  *
  * @param {string} filePath
  * @param {string | null} root
@@ -405,20 +476,33 @@ export function resolveLocation(props, spaces, focused, panes, pinnedLocations) 
  */
 export function resolveFileTab(filePath, root, activeTabs, openTabsMap = {}) {
   const normFile = typeof filePath === "string" ? filePath.replace(/\\/g, "/") : "";
-  const normRoot = typeof root === "string" ? root.replace(/\\/g, "/") : null;
+  const normRoot = typeof root === "string" ? root.replace(/\\/g, "/").replace(/\/+$/, "") : null;
   const fileKey = normRoot ? `${normRoot}/${normFile}` : normFile;
 
   const tabs = Array.isArray(activeTabs) ? activeTabs : [];
   const liveTabs = tabs.filter((t) => t && !t.settled);
 
-  // Prune openTabsMap entries whose tab is no longer active and non-settled
+  // Prune openTabsMap entries whose tab is no longer active and non-settled.
+  // Preserve entries from other roots/spaces untouched!
   const updatedOpenTabs = {};
   if (openTabsMap && typeof openTabsMap === "object") {
     for (const [key, val] of Object.entries(openTabsMap)) {
       if (val && typeof val === "object") {
-        const isStillLive = liveTabs.some(
-          (t) => (val.tabId && t.id === val.tabId) || (val.tabName && t.name === val.tabName)
-        );
+        const valRoot = typeof val.root === "string" ? val.root.replace(/\\/g, "/").replace(/\/+$/, "") : null;
+        const isDifferentRoot = valRoot && normRoot && valRoot !== normRoot;
+        if (isDifferentRoot) {
+          updatedOpenTabs[key] = { ...val };
+          continue;
+        }
+
+        // Strict tabId matching when tabId is known
+        const isStillLive = liveTabs.some((t) => {
+          if (typeof val.tabId === "string" && val.tabId.length > 0) {
+            return t.id === val.tabId;
+          }
+          return typeof val.tabName === "string" && val.tabName.length > 0 && t.name === val.tabName;
+        });
+
         if (isStillLive) {
           updatedOpenTabs[key] = { ...val };
         }
@@ -429,9 +513,13 @@ export function resolveFileTab(filePath, root, activeTabs, openTabsMap = {}) {
   // Check if our file already has a live recorded tab
   const recorded = updatedOpenTabs[fileKey];
   if (recorded) {
-    const matchedLiveTab = liveTabs.find(
-      (t) => (recorded.tabId && t.id === recorded.tabId) || (recorded.tabName && t.name === recorded.tabName)
-    );
+    const matchedLiveTab = liveTabs.find((t) => {
+      if (typeof recorded.tabId === "string" && recorded.tabId.length > 0) {
+        return t.id === recorded.tabId;
+      }
+      return typeof recorded.tabName === "string" && recorded.tabName.length > 0 && t.name === recorded.tabName;
+    });
+
     if (matchedLiveTab) {
       updatedOpenTabs[fileKey] = {
         ...recorded,
@@ -450,17 +538,28 @@ export function resolveFileTab(filePath, root, activeTabs, openTabsMap = {}) {
   const { base, dir } = splitPathInfo(normFile);
   const defaultTitle = base || "File";
 
-  // Check if any other live tab already uses defaultTitle
-  const conflictingTab = liveTabs.find((t) => t.name === defaultTitle);
+  const hasCollision = (name) => liveTabs.some((t) => t.name === name);
   let tabName = defaultTitle;
 
-  if (conflictingTab) {
-    // Disambiguate with parent directory
+  if (hasCollision(tabName)) {
+    let candidate = "";
     if (dir) {
-      tabName = `${dir}/${base}`;
+      candidate = `${dir}/${base}`;
     } else if (normRoot) {
       const rootBase = normRoot.split("/").filter(Boolean).pop() || "";
-      tabName = rootBase ? `${rootBase}/${base}` : base;
+      candidate = rootBase ? `${rootBase}/${base}` : base;
+    } else {
+      candidate = base;
+    }
+
+    if (!hasCollision(candidate)) {
+      tabName = candidate;
+    } else {
+      let n = 2;
+      while (hasCollision(`${candidate} (${n})`)) {
+        n++;
+      }
+      tabName = `${candidate} (${n})`;
     }
   }
 

@@ -30,14 +30,16 @@ import {
 } from "herdr";
 import {
   splitPathInfo,
+  normalizeTabTarget,
   detectLanguage,
   isMarkdownFile,
   defaultViewMode,
   prepareFileText,
+  shouldReloadWatchedFile,
   contentHash,
   splitMarkdownChunks,
   buildSyntaxTheme,
-  resolveLocation,
+  resolveLocationState,
   resolveFileTab,
 } from "./file-logic.js";
 
@@ -98,6 +100,7 @@ export default class FileEditor extends View {
    * @param {import("gpui-kit").ViewContext} cx
    */
   init(_props, cx) {
+    this.closed = false;
     const p = props() || {};
     this.tabMode = typeof p.file === "string" && p.file.length > 0;
 
@@ -109,13 +112,15 @@ export default class FileEditor extends View {
   }
 
   /**
-   * Lifecycle cleanup: releases active EditorState and invalidates active watchers.
+   * Lifecycle cleanup: marks view closed, releases EditorState, and invalidates active watchers.
    *
    * @param {import("gpui-kit").AsyncContext} _cx
    */
   async close(_cx) {
+    this.closed = true;
     this.watched = null;
     this.watchToken = null;
+    this.editorSignature = null;
     if (this.code) {
       this.code.release();
       this.code = null;
@@ -133,15 +138,17 @@ export default class FileEditor extends View {
    * @param {import("gpui-kit").ViewContext} cx
    */
   initTabMode(p, cx) {
-    this.file = p.file;
-    this.root = p.folder || p.cwd || "";
+    const { root, file } = normalizeTabTarget(p);
+    this.file = file;
+    this.root = root;
     this.on = typeof p.on === "string" ? p.on : null;
 
     const requestedMode = typeof p.viewMode === "string" ? p.viewMode : null;
     this.viewMode = defaultViewMode(this.file, requestedMode);
 
+    this.explicitWrap = typeof p.wrap === "boolean";
     const savedWrap = shared("file-editor.wrap");
-    this.wrap = typeof p.wrap === "boolean" ? p.wrap : savedWrap === true;
+    this.wrap = this.explicitWrap ? p.wrap : savedWrap === true;
 
     this.rawText = null;
     this.preparedText = null;
@@ -150,21 +157,115 @@ export default class FileEditor extends View {
     this.isBinary = false;
     this.isTruncated = false;
     this.loading = false;
+    this.reloadPending = false;
     this.code = null;
+    this.editorSignature = null;
     this.watched = null;
     this.watchToken = null;
 
+    // Register this open tab in shared state
+    this.registerOpenTab(p);
+
     this.loadFile(cx);
     this.watchTab(this.root, cx);
+
+    // Sync theme, font, and shared wrap setting periodically
+    cx.timer.every(500, (cx) => this.syncTabConfig(cx));
+  }
+
+  /**
+   * Records this open tab in shared("file-editor.openTabs").
+   *
+   * @param {Record<string, any>} p
+   */
+  registerOpenTab(p) {
+    const fileKey = this.root ? `${this.root}/${this.file}` : this.file;
+    const openTabsMap = shared("file-editor.openTabs") || {};
+    let tabId = null;
+    let tabName = null;
+
+    if (p.pane) {
+      const matchedPane = (panes() || []).find((pn) => pn.pane === p.pane);
+      if (matchedPane?.tab) {
+        tabId = matchedPane.tab;
+        for (const sp of spaces() || []) {
+          const foundTab = (sp.tabs || []).find((t) => t.id === tabId);
+          if (foundTab?.name) {
+            tabName = foundTab.name;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!tabName) {
+      tabName = splitPathInfo(this.file).base || "File";
+    }
+
+    const updatedOpenTabs = {
+      ...openTabsMap,
+      [fileKey]: {
+        root: this.root,
+        file: this.file,
+        tabName,
+        ...(tabId ? { tabId } : {}),
+      },
+    };
+    setShared("file-editor.openTabs", updatedOpenTabs);
+  }
+
+  /**
+   * Synchronizes active EditorState with theme, font settings, and shared wrap.
+   *
+   * @param {import("gpui-kit").ViewContext} cx
+   */
+  syncTabConfig(cx) {
+    if (this.closed) return;
+
+    let changed = false;
+    if (!this.explicitWrap) {
+      const sharedWrap = shared("file-editor.wrap") === true;
+      if (this.wrap !== sharedWrap) {
+        this.wrap = sharedWrap;
+        changed = true;
+      }
+    }
+
+    const isCodeView = !isMarkdownFile(this.file) || this.viewMode === "code";
+    if (isCodeView && this.preparedText !== null && !this.isBinary) {
+      const appSettings = settings() || {};
+      const syntax = buildSyntaxTheme(theme());
+      const sig = JSON.stringify({
+        file: this.file,
+        text: this.preparedText,
+        wrap: this.wrap,
+        font: appSettings.font_family,
+        syntax,
+      });
+
+      if (!this.code || this.editorSignature !== sig) {
+        this.rebuildEditor();
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      cx.notify();
+    }
   }
 
   /**
    * Reads file contents from disk off the UI thread and prepares display state.
+   * Queues concurrent reload requests rather than dropping them.
    *
    * @param {import("gpui-kit").ViewContext} cx
    */
   loadFile(cx) {
-    if (!this.file || this.loading) return;
+    if (!this.file || this.closed) return;
+    if (this.loading) {
+      this.reloadPending = true;
+      return;
+    }
     this.loading = true;
     const root = this.root;
     const file = this.file;
@@ -174,9 +275,10 @@ export default class FileEditor extends View {
     cx.spawn(async (cx) => {
       try {
         const text = await readTextFile(fullPath, { on });
+        if (this.closed) return;
         const { error, text: preparedText, lineCount, isBinary, isTruncated } = prepareFileText(text);
 
-        this.rawText = text;
+        this.rawText = isBinary ? null : text;
         this.preparedText = preparedText;
         this.fileError = error;
         this.lineCount = lineCount;
@@ -184,33 +286,77 @@ export default class FileEditor extends View {
         this.isTruncated = isTruncated;
 
         if (this.preparedText !== null && !this.isBinary) {
-          this.rebuildEditor();
+          if (!isMarkdownFile(this.file) || this.viewMode === "code") {
+            this.rebuildEditor();
+          } else {
+            this.code?.release();
+            this.code = null;
+            this.editorSignature = null;
+          }
         } else {
           this.code?.release();
           this.code = null;
+          this.editorSignature = null;
         }
       } catch {
         this.fileError = "Cannot preview this file (binary, too large, or unreadable)";
+        this.rawText = null;
+        this.preparedText = null;
+        this.lineCount = 0;
+        this.isBinary = false;
+        this.isTruncated = false;
         this.code?.release();
         this.code = null;
+        this.editorSignature = null;
       } finally {
         this.loading = false;
         cx.notify();
+        if (this.reloadPending && !this.closed) {
+          this.reloadPending = false;
+          this.loadFile(cx);
+        }
       }
     });
   }
 
   /**
    * Recreates the EditorState instance outside render() to preserve GPUI invariants.
+   * Uses signature caching to preserve scroll/selection/fold state across identical reloads.
    */
   rebuildEditor() {
-    this.code?.release();
-    this.code = null;
-    if (this.preparedText === null || this.isBinary) return;
+    if (this.preparedText === null || this.isBinary) {
+      this.code?.release();
+      this.code = null;
+      this.editorSignature = null;
+      return;
+    }
+
+    if (isMarkdownFile(this.file) && this.viewMode !== "code") {
+      this.code?.release();
+      this.code = null;
+      this.editorSignature = null;
+      return;
+    }
 
     const { language } = detectLanguage(this.file);
     const t = theme();
     const appSettings = settings() || {};
+    const syntax = buildSyntaxTheme(t);
+
+    const sig = JSON.stringify({
+      file: this.file,
+      text: this.preparedText,
+      wrap: this.wrap,
+      font: appSettings.font_family,
+      syntax,
+    });
+
+    if (this.code && this.editorSignature === sig) {
+      return;
+    }
+
+    this.code?.release();
+    this.code = null;
 
     this.code = EditorState.new({
       language,
@@ -221,8 +367,9 @@ export default class FileEditor extends View {
       soft_wrap: this.wrap,
       font_family: appSettings.font_family,
       font_size: 13,
-      syntax: buildSyntaxTheme(t),
+      syntax,
     });
+    this.editorSignature = sig;
   }
 
   /**
@@ -248,11 +395,15 @@ export default class FileEditor extends View {
   setViewMode(mode, cx) {
     if (this.viewMode === mode) return;
     this.viewMode = mode;
+    if (mode === "code" && !this.code) {
+      this.rebuildEditor();
+    }
     cx.notify();
   }
 
   /**
    * Watches the root workspace folder to reload the active tab when modified externally.
+   * Filters change events using shouldReloadWatchedFile to avoid unnecessary reloads.
    *
    * @param {string} root
    * @param {import("gpui-kit").ViewContext} cx
@@ -263,15 +414,18 @@ export default class FileEditor extends View {
     const token = (this.watchToken = {});
     cx.spawn(async (cx) => {
       try {
-        while (this.watchToken === token) {
-          await watchFolder(root);
-          if (this.watchToken === token) {
-            this.loadFile(cx);
+        while (this.watchToken === token && !this.closed) {
+          const changed = await watchFolder(root);
+          if (this.watchToken === token && !this.closed) {
+            if (shouldReloadWatchedFile(changed, root, this.file)) {
+              this.loadFile(cx);
+            }
           }
         }
       } catch {
         if (this.watchToken === token) {
           this.watched = null;
+          this.watchToken = null;
         }
       }
     });
@@ -522,6 +676,7 @@ export default class FileEditor extends View {
     this.marks = {};
     this.selectedFile = null;
     this.loading = false;
+    this.refreshPending = false;
     this.watched = null;
     this.watchToken = null;
     this.error = null;
@@ -540,7 +695,15 @@ export default class FileEditor extends View {
    * @returns {{ cwd: string | null, on: string | null, space: string | null }}
    */
   getLocation() {
-    return resolveLocation(props(), spaces(), focused(), panes(), shared("spaces.pinned_locations"));
+    return resolveLocationState({
+      props: props(),
+      spaces: spaces(),
+      focused: focused(),
+      panes: panes(),
+      pinnedLocations: shared("spaces.pinned_locations"),
+      previousCwd: this.root,
+      previousSpace: this.context?.space,
+    });
   }
 
   /**
@@ -587,15 +750,16 @@ export default class FileEditor extends View {
     const context = this.context;
     cx.spawn(async (cx) => {
       try {
-        while (this.watchToken === token && this.context === context) {
+        while (this.watchToken === token && this.context === context && !this.closed) {
           await watchFolder(root);
-          if (this.watchToken === token && this.current(context)) {
+          if (this.watchToken === token && this.current(context) && !this.closed) {
             this.refresh(cx);
           }
         }
       } catch {
         if (this.watchToken === token && this.context === context) {
           this.watched = null;
+          this.watchToken = null;
         }
       }
     });
@@ -634,22 +798,22 @@ export default class FileEditor extends View {
    * @param {import("gpui-kit").ViewContext} cx
    */
   refresh(cx) {
-    const { cwd, on } = this.getLocation();
+    const { cwd, on, space } = this.getLocation();
     const next = this.key();
 
     if (next !== this.context?.key) {
       if (this.context) {
-        this.saved.set(this.context.key, { folders: this.folders });
+        this.saved.set(this.context.key, { folders: this.folders, selectedFile: this.selectedFile });
       }
       const saved = this.saved.get(next);
-      this.context = { key: next, cwd, on };
+      this.context = { key: next, cwd, on, space };
       this.root = cwd;
       this.on = on;
       this.entries = new Map();
       this.folders = new Set(saved?.folders);
       this.pending = new Set();
       this.marks = {};
-      this.selectedFile = null;
+      this.selectedFile = saved?.selectedFile ?? null;
       this.watched = null;
       this.watchToken = null;
       this.error = null;
@@ -657,7 +821,10 @@ export default class FileEditor extends View {
       this.loading = false;
     }
 
-    if (!cwd || this.loading) return;
+    if (!cwd || this.loading) {
+      if (this.loading) this.refreshPending = true;
+      return;
+    }
     const context = this.context;
     this.loading = true;
     this.limited = false;
@@ -666,7 +833,20 @@ export default class FileEditor extends View {
       try {
         for (const path of ["", ...this.folders]) {
           if (!this.current(context)) return;
-          await this.loadFolder(path, context);
+          if (path === "") {
+            await this.loadFolder(path, context);
+          } else {
+            try {
+              await this.loadFolder(path, context);
+            } catch {
+              for (const folder of [...this.folders]) {
+                if (folder === path || folder.startsWith(path + "/")) {
+                  this.folders.delete(folder);
+                  this.entries.delete(folder);
+                }
+              }
+            }
+          }
         }
 
         const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on }).catch(() => null);
@@ -694,8 +874,14 @@ export default class FileEditor extends View {
       } catch (e) {
         if (this.current(context)) this.error = String(e);
       } finally {
-        if (this.context === context) this.loading = false;
-        cx.notify();
+        if (this.context === context) {
+          this.loading = false;
+          cx.notify();
+          if (this.refreshPending && !this.closed) {
+            this.refreshPending = false;
+            this.refresh(cx);
+          }
+        }
       }
     });
   }
@@ -816,14 +1002,12 @@ export default class FileEditor extends View {
 
   /**
    * Renders the Files pane browser tree.
+   * Kept pure without inline side-effects.
    *
-   * @param {import("gpui-kit").ViewContext} cx
+   * @param {import("gpui-kit").ViewContext} _cx
    * @returns {import("gpui-kit").Element}
    */
-  renderFilesPane(cx) {
-    if (this.key() !== this.context?.key) {
-      this.refresh(cx);
-    }
+  renderFilesPane(_cx) {
     const t = theme();
 
     return v_flex()

@@ -12,7 +12,7 @@ Inside any Herdr sidebar, split pane, or dedicated tab:
   - **Header**: Clean panel header displaying "Files" and the current workspace folder name.
   - **Directory Tree (`#files-tree`)**: Collapsible folder hierarchy with vector chevrons (`chevron-down.svg`, `chevron-right.svg`), folder icons (`folder.svg`), file icons (`file.svg`), Git status porcelain marks (`A` in green, `M` in yellow/blocked, `D`/`U` in red), and selection highlighting when a file's tab is active.
 - **Dedicated File Editor Tab (`#file-editor-tab`)**:
-  - **Toolbar (`h(38)`)**: Matches Herdr diff tab craft with vector file icon, bold filename, truncated directory path, metadata pill showing line count and language name (e.g., `142 lines · JS` or `85 lines · Markdown`), and a subtle `Read-only` badge.
+  - **Toolbar (`h(38)`)**: Matches Herdr diff tab craft with vector file icon, bold filename, truncated directory path, metadata pill showing line count and language name (e.g., `142 lines · JavaScript` or `85 lines · Markdown`), and a subtle `Read-only` badge.
   - **Markdown Mode Switcher**: For `.md`, `.markdown`, and `.mdx` files, a segmented toggle (`Preview` / `Code`) defaulting to rendered preview.
   - **Wrap Toggle**: In Code view, a `Wrap` button toggling soft line wrapping on long lines.
   - **Copy Button**: One-click clipboard copy button (`copy.svg`) with an instant toast notification.
@@ -44,7 +44,7 @@ Inside any Herdr sidebar, split pane, or dedicated tab:
 - `mods/file-editor/`:
   - `main.js`: Main dual-mode View component handling tree navigation, tab management, toolbar interactions, and editor rendering.
   - `file-logic.js`: Pure, deterministic helpers for language mapping, markdown chunking, location resolution, and tab deduplication.
-  - `mod.json`: Herdr mod manifest (`"place": "none"`, `"focusable": true`).
+  - `mod.json`: Herdr mod manifest (`"place": "none"`).
   - Vector SVG icons: `chevron-down.svg`, `chevron-right.svg`, `folder.svg`, `file.svg`, `copy.svg`, `refresh.svg`.
 - `gpui-kit` & `gpui-base`: Native GPU elements, flex layouts, `Editor`, `EditorState`, and `TextView.markdown`.
 - `herdr` runtime API: `readTextFile`, `watchFolder`, `theme()`, `settings()`, `spaces()`, `panes()`, `focused()`, `run()`, `shared()`, `setShared()`, and `notify()`.

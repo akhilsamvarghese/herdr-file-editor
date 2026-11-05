@@ -3,6 +3,5 @@
   "version": "0.1.0",
   "title": "File Editor",
   "description": "File browser panel and tabbed file viewer with syntax highlighting and Markdown preview",
-  "place": "none",
-  "focusable": true
+  "place": "none"
 }
