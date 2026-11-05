@@ -133,7 +133,7 @@ export default class FileEditor extends View {
     this.watched = null;
     this.watchToken = null;
     this.hoveredPath = null;
-    this.editorSignature = null;
+    this.editorInputs = null;
     if (this.code) {
       this.code.release();
       this.code = null;
@@ -174,7 +174,7 @@ export default class FileEditor extends View {
     this.loading = false;
     this.reloadPending = false;
     this.code = null;
-    this.editorSignature = null;
+    this.editorInputs = null;
     this.watched = null;
     this.watchToken = null;
 
@@ -246,15 +246,8 @@ export default class FileEditor extends View {
     if (isCodeView && this.preparedText !== null && !this.isBinary) {
       const appSettings = settings() || {};
       const syntax = buildSyntaxTheme(theme());
-      const sig = JSON.stringify({
-        file: this.file,
-        text: this.preparedText,
-        wrap: this.wrap,
-        font: appSettings.font_family,
-        syntax,
-      });
 
-      if (!this.code || this.editorSignature !== sig) {
+      if (!this.code || this.editorInputsChanged(syntax, appSettings)) {
         this.rebuildEditor();
         changed = true;
       }
@@ -306,12 +299,12 @@ export default class FileEditor extends View {
           } else {
             this.code?.release();
             this.code = null;
-            this.editorSignature = null;
+            this.editorInputs = null;
           }
         } else {
           this.code?.release();
           this.code = null;
-          this.editorSignature = null;
+          this.editorInputs = null;
         }
       } catch {
         this.fileError = "Cannot preview this file (binary, too large, or unreadable)";
@@ -322,7 +315,7 @@ export default class FileEditor extends View {
         this.isTruncated = false;
         this.code?.release();
         this.code = null;
-        this.editorSignature = null;
+        this.editorInputs = null;
       } finally {
         this.loading = false;
         cx.notify();
@@ -336,20 +329,20 @@ export default class FileEditor extends View {
 
   /**
    * Recreates the EditorState instance outside render() to preserve GPUI invariants.
-   * Uses signature caching to preserve scroll/selection/fold state across identical reloads.
+   * Reuses the current EditorState when its inputs are unchanged, preserving scroll/selection/fold state across identical reloads.
    */
   rebuildEditor() {
     if (this.preparedText === null || this.isBinary) {
       this.code?.release();
       this.code = null;
-      this.editorSignature = null;
+      this.editorInputs = null;
       return;
     }
 
     if (isMarkdownFile(this.file) && this.viewMode !== "code") {
       this.code?.release();
       this.code = null;
-      this.editorSignature = null;
+      this.editorInputs = null;
       return;
     }
 
@@ -358,15 +351,7 @@ export default class FileEditor extends View {
     const appSettings = settings() || {};
     const syntax = buildSyntaxTheme(t);
 
-    const sig = JSON.stringify({
-      file: this.file,
-      text: this.preparedText,
-      wrap: this.wrap,
-      font: appSettings.font_family,
-      syntax,
-    });
-
-    if (this.code && this.editorSignature === sig) {
+    if (this.code && !this.editorInputsChanged(syntax, appSettings)) {
       return;
     }
 
@@ -384,7 +369,34 @@ export default class FileEditor extends View {
       font_size: 13,
       syntax,
     });
-    this.editorSignature = sig;
+    this.editorInputs = {
+      file: this.file,
+      text: this.preparedText,
+      wrap: this.wrap,
+      font: appSettings.font_family,
+      syntax: JSON.stringify(syntax),
+    };
+  }
+
+  /**
+   * Whether the EditorState must be rebuilt for the current inputs. The file
+   * text is compared directly: serializing it on every tick (the old
+   * signature) costs O(file size) twice a second per open tab.
+   *
+   * @param {object} syntax the syntax theme the editor would use
+   * @param {{ font_family?: string }} appSettings
+   * @returns {boolean}
+   */
+  editorInputsChanged(syntax, appSettings) {
+    const prev = this.editorInputs;
+    if (!prev) return true;
+    return (
+      prev.file !== this.file ||
+      prev.text !== this.preparedText ||
+      prev.wrap !== this.wrap ||
+      prev.font !== appSettings.font_family ||
+      prev.syntax !== JSON.stringify(syntax)
+    );
   }
 
   /**
