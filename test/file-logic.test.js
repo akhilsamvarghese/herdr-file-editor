@@ -524,3 +524,44 @@ test("mergeOpenTabEntry - falls back to basename and omits tabId when nothing is
   assert.deepEqual(merged, { root: "/r", file: "src/main.js", tabName: "main.js" });
   assert.equal("tabId" in merged, false);
 });
+
+test("resolveLocationState - focusing a mod pane does not borrow its cwd (new-space regression)", () => {
+  const spaces = [
+    { id: "space-new", folder: "/Users/me", machine: null, active: true, tabs: [{ id: "tab-new" }] },
+  ];
+  const panes = [
+    { pane: "p_files", tab: "tab-new", terminal: null, cwd: "/stale/from/elsewhere" },
+    { pane: "p_term", tab: "tab-new", terminal: "t1", cwd: "/Users/me/repo" },
+  ];
+  // Focus on the Files mod pane in a new space: the live terminal folder wins over space.folder.
+  const rModNew = resolveLocationState({
+    props: {},
+    spaces,
+    focused: { space: "space-new", tab: "tab-new", pane: "p_files", cwd: "/stale/from/elsewhere" },
+    panes,
+    previousSpace: "space-old",
+    previousCwd: "/old/project",
+  });
+  assert.equal(rModNew.cwd, "/Users/me/repo");
+
+  // Same space, mod pane focused: previous cwd is still retained, not the mod pane's stale cwd.
+  const rModSame = resolveLocationState({
+    props: {},
+    spaces,
+    focused: { space: "space-new", tab: "tab-new", pane: "p_files", cwd: "/stale/from/elsewhere" },
+    panes,
+    previousSpace: "space-new",
+    previousCwd: "/remembered/project",
+  });
+  assert.equal(rModSame.cwd, "/remembered/project");
+
+  // No terminal anywhere in the space: falls back to the stored folder.
+  const rNoTerm = resolveLocationState({
+    props: {},
+    spaces,
+    focused: { space: "space-new", tab: "tab-new", pane: "p_files", cwd: null },
+    panes: [{ pane: "p_files", tab: "tab-new", terminal: null, cwd: null }],
+    previousSpace: "space-old",
+  });
+  assert.equal(rNoTerm.cwd, "/Users/me");
+});

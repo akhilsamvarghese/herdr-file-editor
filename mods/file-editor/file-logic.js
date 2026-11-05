@@ -396,13 +396,14 @@ export function buildSyntaxTheme(themeObj = {}) {
 /**
  * Resolves the workspace location honoring active space, pinned location, focused cwd
  * strictly when focused space matches active space, and space folder fallback.
- * Retains previousCwd when focusing a mod tab in the same space.
+ * Retains previousCwd when focusing a mod tab in the same space. Mod panes never supply a cwd;
+ * a live terminal cwd in the active space is preferred over the stored space folder.
  *
  * @param {{
  *   props?: Record<string, any>,
- *   spaces?: Array<{ id: string, folder?: string, machine?: string | null, active?: boolean }>,
+ *   spaces?: Array<{ id: string, folder?: string, machine?: string | null, active?: boolean, tabs?: Array<{ id: string }> }>,
  *   focused?: { space?: string, pane?: string | null, terminal?: string | null, cwd?: string | null } | null,
- *   panes?: Array<{ pane: string, cwd?: string | null, terminal?: string | null }>,
+ *   panes?: Array<{ pane: string, tab?: string, cwd?: string | null, terminal?: string | null }>,
  *   pinnedLocations?: Record<string, string>,
  *   previousCwd?: string | null,
  *   previousSpace?: string | null
@@ -427,15 +428,14 @@ export function resolveLocationState({
   const f = focused || null;
   const isFocusedInActiveSpace = Boolean(f && spaceId && f.space === spaceId);
 
+  // A mod pane has no folder of its own, so focusing one must not borrow a cwd.
   let focusedCwd = null;
   let isModPane = false;
   if (isFocusedInActiveSpace) {
-    if (f.pane && Array.isArray(panes)) {
-      const matchedPane = panes.find((item) => item.pane === f.pane);
-      isModPane = Boolean(matchedPane && !matchedPane.terminal);
+    const matchedPane = f.pane && Array.isArray(panes) ? panes.find((item) => item.pane === f.pane) : null;
+    isModPane = Boolean(matchedPane && !matchedPane.terminal);
+    if (!isModPane) {
       focusedCwd = matchedPane?.cwd || f.cwd || null;
-    } else {
-      focusedCwd = f.cwd || null;
     }
   }
 
@@ -447,7 +447,16 @@ export function resolveLocationState({
     }
   }
 
-  const cwd = p.folder || p.cwd || pinned || focusedCwd || retainedCwd || space?.folder || null;
+  // Live folder of a terminal in the active space, before the stored space folder, which
+  // herdr can leave at $HOME or another space's repo for a freshly created space.
+  const spaceTabIds = new Set((space?.tabs ?? []).map((t) => t.id));
+  const spaceTerminals = (Array.isArray(panes) ? panes : []).filter(
+    (pn) => pn.terminal && pn.cwd && spaceTabIds.has(pn.tab)
+  );
+  const spaceTerminalCwd = (spaceTerminals.find((pn) => pn.tab === f?.tab) || spaceTerminals[0])?.cwd || null;
+
+  const cwd =
+    p.folder || p.cwd || pinned || focusedCwd || retainedCwd || spaceTerminalCwd || space?.folder || null;
 
   const remoteFromTerminal =
     isFocusedInActiveSpace && f?.pane === null && typeof f?.terminal === "string" && f.terminal.includes("/")
