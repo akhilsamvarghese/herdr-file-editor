@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import {
   splitPathInfo,
   normalizeTabTarget,
+  resolveAbsolutePath,
   detectLanguage,
   isMarkdownFile,
   defaultViewMode,
@@ -121,6 +122,18 @@ test("normalizeTabTarget - cleans up root and file parameters", () => {
   // Empty and missing props
   assert.deepEqual(normalizeTabTarget({}), { root: "", file: "" });
   assert.deepEqual(normalizeTabTarget(null), { root: "", file: "" });
+});
+
+test("resolveAbsolutePath - joins root and relative path safely", () => {
+  assert.equal(resolveAbsolutePath("/work/repo", "src/main.js"), "/work/repo/src/main.js");
+  assert.equal(resolveAbsolutePath("/work/repo/", "src/main.js"), "/work/repo/src/main.js");
+  assert.equal(resolveAbsolutePath("/work/repo", "/src/main.js"), "/work/repo/src/main.js");
+  assert.equal(resolveAbsolutePath("/work/repo", "folder"), "/work/repo/folder");
+  assert.equal(resolveAbsolutePath("C:\\work\\repo\\", "src\\app.js"), "C:/work/repo/src/app.js");
+  assert.equal(resolveAbsolutePath("", "src/main.js"), "src/main.js");
+  assert.equal(resolveAbsolutePath(null, "src/main.js"), "src/main.js");
+  assert.equal(resolveAbsolutePath("/work/repo", ""), "/work/repo");
+  assert.equal(resolveAbsolutePath("/work/repo", null), "/work/repo");
 });
 
 test("detectLanguage - identifies common languages and special filenames", () => {

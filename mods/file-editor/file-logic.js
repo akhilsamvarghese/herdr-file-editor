@@ -69,6 +69,20 @@ export function normalizeTabTarget(props) {
 }
 
 /**
+ * Resolves the absolute filesystem path for an entry relative to the workspace root.
+ *
+ * @param {string} [root]
+ * @param {string} [relativePath]
+ * @returns {string}
+ */
+export function resolveAbsolutePath(root, relativePath) {
+  const cleanRel = (relativePath || "").replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!root) return cleanRel;
+  const cleanRoot = root.replace(/\\/g, "/").replace(/\/+$/, "");
+  return cleanRel ? `${cleanRoot}/${cleanRel}` : cleanRoot;
+}
+
+/**
  * Language mapping table for EditorState syntax highlighting.
  * @type {Record<string, { language: string, label: string }>}
  */
