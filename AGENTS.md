@@ -59,7 +59,7 @@ Run the automated test suite and mod validator:
 herdr-app check mods/file-editor && node --test test/
 ```
 
-- `mods/file-editor/file-logic.js`: Pure functions for path splitting, language detection, view mode defaults, file text preparation, Markdown block parsing, syntax theming, location resolution, and tab resolution, file icon choice (`fileIconPath`, icons in `mods/file-editor/icons/`).
+- `mods/file-editor/file-logic.js`: Pure functions for path splitting, language detection, view mode defaults, file text preparation, Markdown block parsing, syntax theming, location resolution, and tab resolution, file icon choice (`fileIconPath`). Icons in `mods/file-editor/icons/` are full-color SVGs from Material Icon Theme (MIT, license in `icons/LICENSE.txt`), drawn with `image()` so their colors survive; `svg()` would tint them with the text color.
 - `test/file-logic.test.js`: Unit tests verifying contract, edge cases, and boundaries with `node:test` and `node:assert/strict`.
 
 ---

@@ -1,4 +1,7 @@
 import test from "node:test";
+import { existsSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import {
   splitPathInfo,
@@ -14,6 +17,10 @@ import {
   resolveFileTab,
   mergeOpenTabEntry,
   fileIconPath,
+  isLightColor,
+  FILE_ICON_DEFAULT,
+  FILE_ICON_BY_EXT,
+  FILE_ICON_BY_NAME,
 } from "../mods/file-editor/file-logic.js";
 
 test("splitPathInfo - extracts base, dir, and ext correctly", () => {
@@ -552,23 +559,60 @@ test("parseMarkdownBlocks - empty and non-string input", () => {
   assert.deepEqual(parseMarkdownBlocks(null), []);
 });
 
-test("fileIconPath - picks an icon by extension, exact name, and env pattern, with generic fallback", () => {
-  assert.equal(fileIconPath("main.js"), "mods/file-editor/icons/code-js.svg");
-  assert.equal(fileIconPath("App.TSX"), "mods/file-editor/icons/code-js.svg");
-  assert.equal(fileIconPath("server.py"), "mods/file-editor/icons/code.svg");
-  assert.equal(fileIconPath("README.md"), "mods/file-editor/icons/markdown.svg");
-  assert.equal(fileIconPath("data.json"), "mods/file-editor/icons/data.svg");
-  assert.equal(fileIconPath("ci.yml"), "mods/file-editor/icons/config.svg");
-  assert.equal(fileIconPath("sync.sh"), "mods/file-editor/icons/shell.svg");
-  assert.equal(fileIconPath("logo.PNG"), "mods/file-editor/icons/image.svg");
-  assert.equal(fileIconPath("preview.png"), "mods/file-editor/icons/image.svg");
-  assert.equal(fileIconPath("bundle.tar.gz"), "mods/file-editor/icons/archive.svg");
+
+const MOD_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "mods", "file-editor");
+
+test("file icons - every mapped icon has an SVG and its light variant when declared", () => {
+  const names = new Set([...Object.values(FILE_ICON_BY_EXT), ...Object.values(FILE_ICON_BY_NAME), FILE_ICON_DEFAULT, "folder-base", "tune"]);
+  for (const name of names) {
+    assert.ok(existsSync(join(MOD_DIR, "icons", `${name}.svg`)), `missing icons/${name}.svg`);
+  }
+  for (const light of ["bun_light", "pnpm_light", "toml_light"]) {
+    assert.ok(existsSync(join(MOD_DIR, "icons", `${light}.svg`)), `missing icons/${light}.svg`);
+  }
+});
+
+test("fileIconPath - each extension resolves to its own themed icon", () => {
+  const expected = {
+    js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "react", ts: "typescript", tsx: "react_ts",
+    py: "python", rb: "ruby", rs: "rust", go: "go", java: "java", kt: "kotlin", swift: "swift", c: "c", h: "h",
+    cpp: "cpp", hpp: "hpp", cs: "csharp", php: "php", lua: "lua", dart: "dart", ex: "elixir", zig: "zig",
+    css: "css", scss: "sass", less: "less", html: "html", vue: "vue", svelte: "svelte",
+    md: "markdown", mdx: "mdx", markdown: "markdown", txt: "document", log: "log",
+    json: "json", xml: "xml", csv: "table", yaml: "yaml", yml: "yaml", toml: "toml", ini: "settings",
+    sh: "console", ps1: "powershell", png: "image", jpg: "image", svg: "svg", mp4: "video", mp3: "audio",
+    ogg: "audio", zip: "zip", pdf: "pdf", doc: "word", xls: "table", sql: "database", db: "database",
+    pem: "key", crt: "certificate", exe: "exe", dll: "dll", wasm: "webassembly", class: "javaclass", jar: "jar",
+  };
+  for (const [ext, icon] of Object.entries(expected)) {
+    assert.equal(fileIconPath(`file.${ext}`), `mods/file-editor/icons/${icon}.svg`, `.${ext}`);
+  }
+});
+
+test("fileIconPath - exact names, env files, light variant and generic fallback", () => {
   assert.equal(fileIconPath(".gitignore"), "mods/file-editor/icons/git.svg");
-  assert.equal(fileIconPath("package-lock.json"), "mods/file-editor/icons/lock.svg");
-  assert.equal(fileIconPath(".env"), "mods/file-editor/icons/key.svg");
-  assert.equal(fileIconPath(".env.local"), "mods/file-editor/icons/key.svg");
-  assert.equal(fileIconPath("Makefile"), "mods/file-editor/file.svg");
-  assert.equal(fileIconPath(".hidden"), "mods/file-editor/file.svg");
-  assert.equal(fileIconPath("notes.unknownext"), "mods/file-editor/file.svg");
-  assert.equal(fileIconPath(""), "mods/file-editor/file.svg");
+  assert.equal(fileIconPath("package-lock.json"), "mods/file-editor/icons/nodejs.svg");
+  assert.equal(fileIconPath("yarn.lock"), "mods/file-editor/icons/yarn.svg");
+  assert.equal(fileIconPath("Cargo.lock"), "mods/file-editor/icons/lock.svg");
+  assert.equal(fileIconPath(".env"), "mods/file-editor/icons/tune.svg");
+  assert.equal(fileIconPath(".env.local"), "mods/file-editor/icons/tune.svg");
+  assert.equal(fileIconPath("PKG.JS"), "mods/file-editor/icons/javascript.svg");
+  assert.equal(fileIconPath("bun.lockb"), "mods/file-editor/icons/bun.svg");
+  assert.equal(fileIconPath("bun.lockb", true), "mods/file-editor/icons/bun_light.svg");
+  assert.equal(fileIconPath("main.js", true), "mods/file-editor/icons/javascript.svg");
+  assert.equal(fileIconPath("notes.unknownext"), `mods/file-editor/icons/${FILE_ICON_DEFAULT}.svg`);
+  assert.equal(fileIconPath("Dockerfile"), "mods/file-editor/icons/docker.svg");
+  assert.equal(fileIconPath(".dockerignore"), "mods/file-editor/icons/docker.svg");
+  assert.equal(fileIconPath("Makefile"), "mods/file-editor/icons/makefile.svg");
+  assert.equal(fileIconPath(".hidden"), `mods/file-editor/icons/${FILE_ICON_DEFAULT}.svg`);
+  assert.equal(fileIconPath(""), `mods/file-editor/icons/${FILE_ICON_DEFAULT}.svg`);
+});
+
+test("isLightColor - classifies hex backgrounds by luminance", () => {
+  assert.equal(isLightColor("#ffffff"), true);
+  assert.equal(isLightColor("#fff"), true);
+  assert.equal(isLightColor("#1e1e2e"), false);
+  assert.equal(isLightColor("000000"), false);
+  assert.equal(isLightColor(undefined), false);
+  assert.equal(isLightColor("not a color"), false);
 });

@@ -10,7 +10,7 @@
  * - Soft-wrap toggle, copy button, file reload, and live disk watching.
  */
 
-import { View, div, svg } from "gpui-kit";
+import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState } from "gpui-base";
 import {
   spaces,
@@ -41,6 +41,8 @@ import {
   resolveFileTab,
   mergeOpenTabEntry,
   fileIconPath,
+  isLightColor,
+  FOLDER_ICON_PATH,
 } from "./file-logic.js";
 import { renderMarkdownDocument } from "./markdown-view.js";
 
@@ -459,7 +461,7 @@ export default class FileEditor extends View {
           .bg(t.chrome)
           .border_b(1)
           .border_color(t.border)
-          .child(svg("mods/file-editor/file.svg").size(14).flex_none().text_color(t.muted))
+          .child(image(fileIconPath(base, isLightColor(t.background))).size(14).flex_none())
           .child(div().font_semibold().text_size(12.5).truncate().child(base))
           .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(dir))
           .child(
@@ -978,7 +980,7 @@ export default class FileEditor extends View {
               ? svg(`mods/file-editor/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim)
               : div().w(12).flex_none()
           )
-          .child(svg(entry.dir ? "mods/file-editor/folder.svg" : fileIconPath(entry.name)).size(14).flex_none().text_color(t.muted))
+          .child(image(entry.dir ? FOLDER_ICON_PATH : fileIconPath(entry.name, isLightColor(t.background))).size(14).flex_none())
           .child(div().flex_1().min_w(0).truncate().child(entry.name))
           .when(Boolean(mark), (el) =>
             el.child(
