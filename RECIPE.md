@@ -1,0 +1,66 @@
+# File Editor
+
+A native, dual-mode file browser panel and tabbed file viewer for Herdr with syntax highlighting, Markdown preview, and live filesystem watching powered directly by GPUI.
+
+![File Editor](preview.png)
+
+## What you see
+
+Inside any Herdr sidebar, split pane, or dedicated tab:
+
+- **Files Browser Pane (`#files`)**:
+  - **Header**: Clean panel header displaying "Files" and the current workspace folder name.
+  - **Directory Tree (`#files-tree`)**: Collapsible folder hierarchy with vector chevrons (`chevron-down.svg`, `chevron-right.svg`), folder icons (`folder.svg`), file icons (`file.svg`), Git status porcelain marks (`A` in green, `M` in yellow/blocked, `D`/`U` in red), and selection highlighting when a file's tab is active.
+- **Dedicated File Editor Tab (`#file-editor-tab`)**:
+  - **Toolbar (`h(38)`)**: Matches Herdr diff tab craft with vector file icon, bold filename, truncated directory path, metadata pill showing line count and language name (e.g., `142 lines · JS` or `85 lines · Markdown`), and a subtle `Read-only` badge.
+  - **Markdown Mode Switcher**: For `.md`, `.markdown`, and `.mdx` files, a segmented toggle (`Preview` / `Code`) defaulting to rendered preview.
+  - **Wrap Toggle**: In Code view, a `Wrap` button toggling soft line wrapping on long lines.
+  - **Copy Button**: One-click clipboard copy button (`copy.svg`) with an instant toast notification.
+  - **Refresh Button**: One-click reload button (`refresh.svg`) that re-reads file content from disk.
+  - **Code View**: Full-pane read-only editor with line numbers, code folding, theme-matched syntax highlighting, and user font settings.
+  - **Markdown Preview**: Rendered Markdown with 14px typography and 24px line height in a centered, readable 880px max-width reading column.
+  - **Edge State Banners**: Friendly centered messages for deleted/missing files (`"This file is no longer available"`), binary files (`"Binary file · no text preview"`), or files truncated past 400,000 characters.
+
+## How it behaves
+
+- Automatically detects whether it is running as a Files browser panel (`props().file` unset) or a dedicated file viewer tab (`props().file` provided).
+- In Files panel mode:
+  - Resolves workspace root from `props().folder` or `props().cwd`, pinned active space location, focused terminal cwd (only when focused in the active space), or space folder fallback.
+  - Checks location changes every 250ms in memory, so switching active spaces updates the file tree immediately.
+  - Clicking a directory expands or collapses its contents.
+  - **Clicking a file never opens the raw file inline inside the panel**. It calls `openFileTab(path)` to open or focus the file in its own Herdr tab.
+  - Reuses an already open, non-settled tab for the same file using `run("tab.select")` instead of creating duplicate tabs.
+  - Disambiguates identical file names across different folders by prepending their parent directory (`dir/base`).
+- In File Editor tab mode:
+  - Reads file text asynchronously off the UI thread with `readTextFile`.
+  - Automatically detects language and syntax coloring tokens from Herdr's active theme.
+  - Defaults Markdown files to `"preview"` mode and all other files to `"code"` mode.
+  - Watches the workspace directory via `watchFolder` so external edits or saves reload the open tab automatically.
+  - Persists line wrap preferences in `shared("file-editor.wrap")`.
+  - Releasing or closing tabs cleanly frees `EditorState` instances and invalidates watch tokens.
+
+## Built from
+
+- `mods/file-editor/`:
+  - `main.js`: Main dual-mode View component handling tree navigation, tab management, toolbar interactions, and editor rendering.
+  - `file-logic.js`: Pure, deterministic helpers for language mapping, markdown chunking, location resolution, and tab deduplication.
+  - `mod.json`: Herdr mod manifest (`"place": "none"`, `"focusable": true`).
+  - Vector SVG icons: `chevron-down.svg`, `chevron-right.svg`, `folder.svg`, `file.svg`, `copy.svg`, `refresh.svg`.
+- `gpui-kit` & `gpui-base`: Native GPU elements, flex layouts, `Editor`, `EditorState`, and `TextView.markdown`.
+- `herdr` runtime API: `readTextFile`, `watchFolder`, `theme()`, `settings()`, `spaces()`, `panes()`, `focused()`, `run()`, `shared()`, `setShared()`, and `notify()`.
+
+## Watch out
+
+- Keep the mod name `file-editor` stable because assets are loaded from `mods/file-editor/*.svg`.
+- `EditorState.new` must never be called inside `render()`. Always instantiate in `loadFile` or event handlers and release previous instances via `this.code?.release()`.
+- Never pass `null` or `undefined` to `.child()` to prevent GPUI rendering panics.
+- Never use synchronous event `cx` across an `await`; wrap asynchronous workflows in `cx.spawn(async (cx) => ...)`.
+- Per-loop `watchToken` objects invalidate stale background watchers when switching directories or closing views.
+
+## Done when
+
+- `herdr-app check mods/file-editor` passes with zero errors.
+- `node --test test/` passes all unit tests.
+- `sync.sh` synchronizes the mod to `~/.config/herdr-app/mods/file-editor`.
+- Clicking files in the Files browser opens dedicated Herdr tabs rather than replacing the directory tree.
+- Syntax highlighting and Markdown preview render smoothly.
