@@ -13,6 +13,7 @@ import {
   resolveLocationState,
   resolveFileTab,
   mergeOpenTabEntry,
+  fileIconPath,
 } from "../mods/file-editor/file-logic.js";
 
 test("splitPathInfo - extracts base, dir, and ext correctly", () => {
@@ -549,4 +550,25 @@ test("parseMarkdownBlocks - a line of pipes without a delimiter row is a paragra
 test("parseMarkdownBlocks - empty and non-string input", () => {
   assert.deepEqual(parseMarkdownBlocks(""), []);
   assert.deepEqual(parseMarkdownBlocks(null), []);
+});
+
+test("fileIconPath - picks an icon by extension, exact name, and env pattern, with generic fallback", () => {
+  assert.equal(fileIconPath("main.js"), "mods/file-editor/icons/code-js.svg");
+  assert.equal(fileIconPath("App.TSX"), "mods/file-editor/icons/code-js.svg");
+  assert.equal(fileIconPath("server.py"), "mods/file-editor/icons/code.svg");
+  assert.equal(fileIconPath("README.md"), "mods/file-editor/icons/markdown.svg");
+  assert.equal(fileIconPath("data.json"), "mods/file-editor/icons/data.svg");
+  assert.equal(fileIconPath("ci.yml"), "mods/file-editor/icons/config.svg");
+  assert.equal(fileIconPath("sync.sh"), "mods/file-editor/icons/shell.svg");
+  assert.equal(fileIconPath("logo.PNG"), "mods/file-editor/icons/image.svg");
+  assert.equal(fileIconPath("preview.png"), "mods/file-editor/icons/image.svg");
+  assert.equal(fileIconPath("bundle.tar.gz"), "mods/file-editor/icons/archive.svg");
+  assert.equal(fileIconPath(".gitignore"), "mods/file-editor/icons/git.svg");
+  assert.equal(fileIconPath("package-lock.json"), "mods/file-editor/icons/lock.svg");
+  assert.equal(fileIconPath(".env"), "mods/file-editor/icons/key.svg");
+  assert.equal(fileIconPath(".env.local"), "mods/file-editor/icons/key.svg");
+  assert.equal(fileIconPath("Makefile"), "mods/file-editor/file.svg");
+  assert.equal(fileIconPath(".hidden"), "mods/file-editor/file.svg");
+  assert.equal(fileIconPath("notes.unknownext"), "mods/file-editor/file.svg");
+  assert.equal(fileIconPath(""), "mods/file-editor/file.svg");
 });
