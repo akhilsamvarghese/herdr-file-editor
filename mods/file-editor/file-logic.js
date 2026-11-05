@@ -576,3 +576,26 @@ export function resolveFileTab(filePath, root, activeTabs, openTabsMap = {}) {
     updatedOpenTabs,
   };
 }
+
+/**
+ * Builds the shared openTabs entry for a file tab being registered.
+ * Keeps a previously recorded tabName/tabId unless the incoming values supply
+ * a fresher one, so a tab opened without a pane (e.g. via `tab.new`) cannot
+ * overwrite a disambiguated name such as "lib/index.js" with its basename.
+ *
+ * @param {{ tabId?: string, tabName?: string } | null | undefined} existing - Current entry for this file, if any.
+ * @param {{ root: string | null, file: string, tabName?: string | null, tabId?: string | null }} incoming - Values known for this open.
+ * @returns {{ root: string | null, file: string, tabName: string, tabId?: string }}
+ */
+export function mergeOpenTabEntry(existing, incoming) {
+  const prev = existing && typeof existing === "object" ? existing : {};
+  const tabId = incoming.tabId || prev.tabId;
+  const tabName = incoming.tabName || prev.tabName || splitPathInfo(incoming.file).base || "File";
+
+  return {
+    root: incoming.root,
+    file: incoming.file,
+    tabName,
+    ...(tabId ? { tabId } : {}),
+  };
+}

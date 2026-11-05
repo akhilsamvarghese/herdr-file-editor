@@ -13,6 +13,7 @@ import {
   buildSyntaxTheme,
   resolveLocationState,
   resolveFileTab,
+  mergeOpenTabEntry,
 } from "../mods/file-editor/file-logic.js";
 
 test("splitPathInfo - extracts base, dir, and ext correctly", () => {
@@ -504,4 +505,22 @@ test("resolveFileTab - manages cross-space tabs, strict tabId matching, and iter
   });
   assert.equal(rSettled.existingTabId, null);
   assert.equal(rSettled.tabName, "index.js");
+});
+
+test("mergeOpenTabEntry - keeps recorded tabName and tabId when opened without a pane (R2-1)", () => {
+  const existing = { root: "/r", file: "lib/index.js", tabName: "lib/index.js", tabId: "tab-7" };
+  const merged = mergeOpenTabEntry(existing, { root: "/r", file: "lib/index.js", tabName: null, tabId: null });
+  assert.deepEqual(merged, { root: "/r", file: "lib/index.js", tabName: "lib/index.js", tabId: "tab-7" });
+});
+
+test("mergeOpenTabEntry - fresh pane-derived name and tabId win over recorded values", () => {
+  const existing = { root: "/r", file: "a.js", tabName: "old", tabId: "tab-1" };
+  const merged = mergeOpenTabEntry(existing, { root: "/r", file: "a.js", tabName: "new", tabId: "tab-2" });
+  assert.deepEqual(merged, { root: "/r", file: "a.js", tabName: "new", tabId: "tab-2" });
+});
+
+test("mergeOpenTabEntry - falls back to basename and omits tabId when nothing is known", () => {
+  const merged = mergeOpenTabEntry(undefined, { root: "/r", file: "src/main.js", tabName: null, tabId: null });
+  assert.deepEqual(merged, { root: "/r", file: "src/main.js", tabName: "main.js" });
+  assert.equal("tabId" in merged, false);
 });

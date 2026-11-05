@@ -41,6 +41,7 @@ import {
   buildSyntaxTheme,
   resolveLocationState,
   resolveFileTab,
+  mergeOpenTabEntry,
 } from "./file-logic.js";
 
 /** Max entries displayed per directory and total tree bounds. */
@@ -198,18 +199,14 @@ export default class FileEditor extends View {
       }
     }
 
-    if (!tabName) {
-      tabName = splitPathInfo(this.file).base || "File";
-    }
-
     const updatedOpenTabs = {
       ...openTabsMap,
-      [fileKey]: {
+      [fileKey]: mergeOpenTabEntry(openTabsMap[fileKey], {
         root: this.root,
         file: this.file,
         tabName,
-        ...(tabId ? { tabId } : {}),
-      },
+        tabId,
+      }),
     };
     setShared("file-editor.openTabs", updatedOpenTabs);
   }
