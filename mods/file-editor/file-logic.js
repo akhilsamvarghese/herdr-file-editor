@@ -927,3 +927,18 @@ export function fileIconPath(fileName, light = false) {
   const variant = light && FILE_ICON_LIGHT.has(icon) ? `${icon}_light` : icon;
   return `mods/file-editor/icons/${variant}.svg`;
 }
+
+/** Raster image extensions, previewed as pictures. SVG stays a code view (it is text). */
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif"]);
+
+/**
+ * True when a file is a raster image to show as a picture instead of text.
+ *
+ * @param {string} fileName
+ * @returns {boolean}
+ */
+export function isImageFile(fileName) {
+  const lower = typeof fileName === "string" ? fileName.toLowerCase() : "";
+  const dot = lower.lastIndexOf(".");
+  return dot > 0 && IMAGE_EXTENSIONS.has(lower.slice(dot + 1));
+}

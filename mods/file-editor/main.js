@@ -16,6 +16,7 @@ import {
   spaces,
   panes,
   focused,
+  appHome,
   exec,
   readTextFile,
   watchFolder,
@@ -42,6 +43,7 @@ import {
   mergeOpenTabEntry,
   fileIconPath,
   isLightColor,
+  isImageFile,
   FOLDER_ICON_PATH,
 } from "./file-logic.js";
 import { renderMarkdownDocument } from "./markdown-view.js";
@@ -121,6 +123,12 @@ export default class FileEditor extends View {
    */
   async close(_cx) {
     this.closed = true;
+    if (this.imageSrc) {
+      const name = this.imageSrc.slice(this.imageSrc.lastIndexOf("/") + 1);
+      const prefix = name.replace(/-\d+\.[^.]+$/, "");
+      await exec("sh", ["-c", 'rm -f "$1/$2"-*', "rm", `${appHome()}/cache/file-editor`, prefix]).catch(() => null);
+      this.imageSrc = null;
+    }
     this.watched = null;
     this.watchToken = null;
     this.editorSignature = null;
@@ -158,6 +166,8 @@ export default class FileEditor extends View {
     this.fileError = null;
     this.lineCount = 0;
     this.isBinary = false;
+    this.isImage = isImageFile(this.file);
+    this.imageSrc = null;
     this.isTruncated = false;
     this.loading = false;
     this.reloadPending = false;
@@ -260,6 +270,10 @@ export default class FileEditor extends View {
    * @param {import("gpui-kit").ViewContext} cx
    */
   loadFile(cx) {
+    if (this.isImage) {
+      this.loadImage(cx);
+      return;
+    }
     if (!this.file || this.closed) return;
     if (this.loading) {
       this.reloadPending = true;
@@ -441,8 +455,10 @@ export default class FileEditor extends View {
     const { base, dir } = splitPathInfo(this.file);
     const isMarkdown = isMarkdownFile(this.file);
     const { label: langLabel } = detectLanguage(this.file);
-    const lineLabel = `${this.lineCount} line${this.lineCount === 1 ? "" : "s"} · ${langLabel}`;
-    const isCodeView = !isMarkdown || this.viewMode === "code";
+    const lineLabel = this.isImage
+      ? `Image · ${(base.split(".").pop() || "").toUpperCase()}`
+      : `${this.lineCount} line${this.lineCount === 1 ? "" : "s"} · ${langLabel}`;
+    const isCodeView = !this.isImage && (!isMarkdown || this.viewMode === "code");
 
     return v_flex()
       .id("file-editor-tab")
@@ -549,21 +565,23 @@ export default class FileEditor extends View {
                 .child("Wrap")
             )
           )
-          .child(
-            h_flex()
-              .id("file-editor-copy")
-              .flex_none()
-              .p(4)
-              .rounded(4)
-              .cursor_pointer()
-              .hover((s) => s.bg(t.hover))
-              .text_color(t.muted)
-              .tooltip("Copy file content")
-              .on_click((_e, cx) => {
-                cx.write_to_clipboard(this.rawText ?? "");
-                notify({ title: "File copied", body: base, level: "success", timeout: 1500 });
-              })
-              .child(svg("mods/file-editor/copy.svg").size(12))
+          .when(!this.isImage, (e) =>
+            e.child(
+              h_flex()
+                .id("file-editor-copy")
+                .flex_none()
+                .p(4)
+                .rounded(4)
+                .cursor_pointer()
+                .hover((s) => s.bg(t.hover))
+                .text_color(t.muted)
+                .tooltip("Copy file content")
+                .on_click((_e, cx) => {
+                  cx.write_to_clipboard(this.rawText ?? "");
+                  notify({ title: "File copied", body: base, level: "success", timeout: 1500 });
+                })
+                .child(svg("mods/file-editor/copy.svg").size(12))
+            )
           )
           .child(
             h_flex()
@@ -595,10 +613,71 @@ export default class FileEditor extends View {
                   .text_color(t.dim)
                   .child(this.loading ? "Loading file…" : this.fileError)
               )
-          : !isCodeView
-            ? this.renderMarkdownView(t)
-            : this.renderCodeView(t)
+          : this.isImage
+            ? this.renderImageView(t)
+            : !isCodeView
+              ? this.renderMarkdownView(t)
+              : this.renderCodeView(t)
       );
+  }
+
+  /**
+   * Copies the picture into the app's own cache folder, so the host can draw it.
+   * The host only reads images under the app folder, so each load writes a new,
+   * timestamped copy and removes the previous one. Outside `mods/`, so the copy
+   * does not trigger a mod reload.
+   *
+   * @param {import("gpui-kit").ViewContext} cx
+   */
+  loadImage(cx) {
+    if (!this.file || this.closed || this.on) return;
+    const src = this.root ? `${this.root}/${this.file}` : this.file;
+    const ext = splitPathInfo(this.file).ext;
+    const safe = src.replace(/[^A-Za-z0-9._-]+/g, "_").slice(-120);
+    const rel = `cache/file-editor/${safe}-${Date.now()}.${ext}`;
+    const home = appHome();
+    // Copy, then drop every older copy of this same image.
+    const script = 'mkdir -p "$1" && cp -f "$4" "$3" && for old in "$1/$2"-*; do [ "$old" = "$3" ] || rm -f "$old"; done';
+    cx.spawn(async (cx) => {
+      const r = await exec("sh", ["-c", script, "copy", `${home}/cache/file-editor`, safe, `${home}/${rel}`, src]).catch(() => null);
+      if (this.closed) return;
+      if (r?.code === 0) {
+        this.imageSrc = rel;
+        this.fileError = null;
+      } else {
+        this.imageSrc = null;
+        this.fileError = "Could not load this image.";
+      }
+      cx.notify();
+    });
+  }
+
+  /**
+   * Shows a raster image at its natural size, scaled down to fit the pane.
+   * The host reads images from this machine's disk, so remote files get a notice.
+   *
+   * @param {Record<string, string>} t
+   * @returns {import("gpui-kit").Element}
+   */
+  renderImageView(t) {
+    if (this.on) {
+      return v_flex()
+        .flex_1()
+        .min_h(0)
+        .p(24)
+        .items_center()
+        .justify_center()
+        .child(div().max_w(620).text_size(12).text_color(t.dim).child("Image preview works only for files on this machine."));
+    }
+    return v_flex()
+      .id("file-editor-image")
+      .flex_1()
+      .min_h(0)
+      .p(24)
+      .bg(t.background)
+      .items_center()
+      .justify_center()
+      .when(Boolean(this.imageSrc), (e) => e.child(image(this.imageSrc).max_w_full().max_h_full()));
   }
 
   /**

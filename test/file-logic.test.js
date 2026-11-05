@@ -18,6 +18,7 @@ import {
   mergeOpenTabEntry,
   fileIconPath,
   isLightColor,
+  isImageFile,
   FILE_ICON_DEFAULT,
   FILE_ICON_BY_EXT,
   FILE_ICON_BY_NAME,
@@ -615,4 +616,15 @@ test("isLightColor - classifies hex backgrounds by luminance", () => {
   assert.equal(isLightColor("000000"), false);
   assert.equal(isLightColor(undefined), false);
   assert.equal(isLightColor("not a color"), false);
+});
+
+test("isImageFile - raster images are pictures, SVG and text are not", () => {
+  assert.equal(isImageFile("preview.PNG"), true);
+  assert.equal(isImageFile("photo.jpeg"), true);
+  assert.equal(isImageFile("anim.gif"), true);
+  assert.equal(isImageFile("icon.svg"), false);
+  assert.equal(isImageFile("main.js"), false);
+  assert.equal(isImageFile("png"), false);
+  assert.equal(isImageFile(".png"), false);
+  assert.equal(isImageFile(""), false);
 });
