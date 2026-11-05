@@ -721,3 +721,68 @@ export function mergeOpenTabEntry(existing, incoming) {
     ...(tabId ? { tabId } : {}),
   };
 }
+
+/** Icon key for a file name, by exact name or pattern first, then by extension. */
+const FILE_ICON_BY_NAME = {
+  ".gitignore": "git",
+  ".gitattributes": "git",
+  ".gitmodules": "git",
+  ".gitkeep": "git",
+  "package-lock.json": "lock",
+  "yarn.lock": "lock",
+  "pnpm-lock.yaml": "lock",
+  "bun.lockb": "lock",
+  "cargo.lock": "lock",
+  "gemfile.lock": "lock",
+  "poetry.lock": "lock",
+  "go.sum": "lock",
+};
+
+/** Icon key by lowercase extension, without the dot. */
+const FILE_ICON_BY_EXT = {
+  js: "code-js", mjs: "code-js", cjs: "code-js", jsx: "code-js", ts: "code-js", tsx: "code-js",
+  py: "code", rb: "code", rs: "code", go: "code", java: "code", kt: "code", kts: "code",
+  swift: "code", c: "code", h: "code", cc: "code", cpp: "code", cxx: "code", hpp: "code",
+  cs: "code", php: "code", lua: "code", dart: "code", ex: "code", exs: "code", erl: "code",
+  hs: "code", scala: "code", zig: "code", clj: "code", r: "code", pl: "code",
+  css: "style", scss: "style", sass: "style", less: "style", styl: "style",
+  html: "globe", htm: "globe", xhtml: "globe", vue: "globe", svelte: "globe",
+  md: "markdown", mdx: "markdown", markdown: "markdown", rst: "markdown",
+  txt: "text", log: "text", text: "text",
+  json: "data", jsonc: "data", xml: "data", csv: "data", tsv: "data",
+  yaml: "config", yml: "config", toml: "config", ini: "config", cfg: "config", conf: "config",
+  config: "config", properties: "config", editorconfig: "config",
+  sh: "shell", bash: "shell", zsh: "shell", fish: "shell", ps1: "shell", bat: "shell", cmd: "shell",
+  png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", bmp: "image",
+  ico: "image", tif: "image", tiff: "image", avif: "image", svg: "image",
+  mp4: "media", mov: "media", avi: "media", mkv: "media", webm: "media",
+  mp3: "media", wav: "media", ogg: "media", flac: "media", m4a: "media",
+  zip: "archive", tar: "archive", gz: "archive", tgz: "archive", bz2: "archive", xz: "archive",
+  rar: "archive", "7z": "archive",
+  pdf: "document", doc: "document", docx: "document", odt: "document", rtf: "document",
+  xls: "document", xlsx: "document", pages: "document",
+  sql: "database", sqlite: "database", sqlite3: "database", db: "database",
+  pem: "key", key: "key", crt: "key", cer: "key",
+  exe: "binary", dll: "binary", so: "binary", dylib: "binary", bin: "binary", wasm: "binary",
+  o: "binary", a: "binary", class: "binary", jar: "binary", pyc: "binary",
+  lock: "lock",
+};
+
+/**
+ * Chooses the icon for a file by its name: exact names first (Git and lock files,
+ * `.env` variants), then the extension. Unknown files get the generic file icon.
+ *
+ * @param {string} fileName Base name only.
+ * @returns {string} Path to the SVG, relative to the Herdr app folder.
+ */
+export function fileIconPath(fileName) {
+  const name = typeof fileName === "string" ? fileName : "";
+  const lower = name.toLowerCase();
+  if (lower === ".env" || lower.startsWith(".env.")) return "mods/file-editor/icons/key.svg";
+  const byName = FILE_ICON_BY_NAME[lower];
+  if (byName) return `mods/file-editor/icons/${byName}.svg`;
+  const dot = lower.lastIndexOf(".");
+  const ext = dot > 0 ? lower.slice(dot + 1) : "";
+  const byExt = FILE_ICON_BY_EXT[ext];
+  return byExt ? `mods/file-editor/icons/${byExt}.svg` : "mods/file-editor/file.svg";
+}

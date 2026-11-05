@@ -59,7 +59,7 @@ Run the automated test suite and mod validator:
 herdr-app check mods/file-editor && node --test test/
 ```
 
-- `mods/file-editor/file-logic.js`: Pure functions for path splitting, language detection, view mode defaults, file text preparation, Markdown block parsing, syntax theming, location resolution, and tab resolution.
+- `mods/file-editor/file-logic.js`: Pure functions for path splitting, language detection, view mode defaults, file text preparation, Markdown block parsing, syntax theming, location resolution, and tab resolution, file icon choice (`fileIconPath`, icons in `mods/file-editor/icons/`).
 - `test/file-logic.test.js`: Unit tests verifying contract, edge cases, and boundaries with `node:test` and `node:assert/strict`.
 
 ---

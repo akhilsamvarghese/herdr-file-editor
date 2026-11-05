@@ -40,6 +40,7 @@ import {
   resolveLocationState,
   resolveFileTab,
   mergeOpenTabEntry,
+  fileIconPath,
 } from "./file-logic.js";
 import { renderMarkdownDocument } from "./markdown-view.js";
 
@@ -977,7 +978,7 @@ export default class FileEditor extends View {
               ? svg(`mods/file-editor/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(t.dim)
               : div().w(12).flex_none()
           )
-          .child(svg(`mods/file-editor/${entry.dir ? "folder" : "file"}.svg`).size(14).flex_none().text_color(t.muted))
+          .child(svg(entry.dir ? "mods/file-editor/folder.svg" : fileIconPath(entry.name)).size(14).flex_none().text_color(t.muted))
           .child(div().flex_1().min_w(0).truncate().child(entry.name))
           .when(Boolean(mark), (el) =>
             el.child(
