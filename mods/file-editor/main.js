@@ -32,6 +32,7 @@ import {
 import {
   splitPathInfo,
   normalizeTabTarget,
+  resolveAbsolutePath,
   detectLanguage,
   isMarkdownFile,
   defaultViewMode,
@@ -131,6 +132,7 @@ export default class FileEditor extends View {
     }
     this.watched = null;
     this.watchToken = null;
+    this.hoveredPath = null;
     this.editorSignature = null;
     if (this.code) {
       this.code.release();
@@ -750,6 +752,7 @@ export default class FileEditor extends View {
     this.pending = new Set();
     this.marks = {};
     this.selectedFile = null;
+    this.hoveredPath = null;
     this.loading = false;
     this.refreshPending = false;
     this.watched = null;
@@ -889,6 +892,7 @@ export default class FileEditor extends View {
       this.pending = new Set();
       this.marks = {};
       this.selectedFile = saved?.selectedFile ?? null;
+      this.hoveredPath = null;
       this.watched = null;
       this.watchToken = null;
       this.error = null;
@@ -1023,6 +1027,24 @@ export default class FileEditor extends View {
   }
 
   /**
+   * Copies the absolute filesystem path of a file or directory to the clipboard.
+   *
+   * @param {string} path
+   * @param {boolean} isDir
+   * @param {import("gpui-kit").ViewContext} cx
+   */
+  copyPathToClipboard(path, isDir, cx) {
+    const absPath = resolveAbsolutePath(this.root, path);
+    cx.write_to_clipboard(absPath);
+    notify({
+      title: isDir ? "Folder path copied" : "File path copied",
+      body: absPath,
+      level: "success",
+      timeout: 1500,
+    });
+  }
+
+  /**
    * Builds rows of the files tree.
    *
    * @param {string} prefix
@@ -1039,6 +1061,7 @@ export default class FileEditor extends View {
       const open = this.folders.has(path);
       const mark = this.marks[`${this.root}/${path}`];
       const isSelected = this.selectedFile === path;
+      const isHovered = this.hoveredPath === path;
 
       out.push(
         h_flex()
@@ -1053,6 +1076,14 @@ export default class FileEditor extends View {
           .cursor_pointer()
           .when(isSelected, (el) => el.bg(t.selected))
           .hover((s) => s.bg(isSelected ? t.selected : t.hover))
+          .on_hover((hovered, cx) => {
+            if (hovered) {
+              this.hoveredPath = path;
+            } else if (this.hoveredPath === path) {
+              this.hoveredPath = null;
+            }
+            cx.notify();
+          })
           .on_click((_e, cx) => (entry.dir ? this.toggle(path, cx) : this.openFileTab(path, cx)))
           .child(
             entry.dir
@@ -1067,6 +1098,24 @@ export default class FileEditor extends View {
                 .text_size(11)
                 .text_color(mark === "A" ? t.ansi2 : mark === "D" || mark === "U" ? t.ansi1 : t.blocked)
                 .child(mark)
+            )
+          )
+          .when(isHovered, (el) =>
+            el.child(
+              h_flex()
+                .id(`file-copy-${path}`)
+                .flex_none()
+                .p(3)
+                .rounded(4)
+                .cursor_pointer()
+                .hover((s) => s.bg(isSelected ? t.hover : t.selected))
+                .text_color(t.muted)
+                .tooltip(entry.dir ? "Copy folder path" : "Copy file path")
+                .on_click((_e, cx) => {
+                  cx.stop_propagation();
+                  this.copyPathToClipboard(path, entry.dir, cx);
+                })
+                .child(svg("mods/file-editor/copy.svg").size(12))
             )
           )
       );
