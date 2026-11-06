@@ -9,7 +9,7 @@ Instead of opening raw code files inside the narrow Files panel, `file-editor` o
 ## Features
 
 - **Dual-Mode Operation**:
-  - **Files Pane Mode**: Sits in your sidebar panel or split pane, browsing the active space's workspace tree with Git status badges (`A`, `M`, `D`, `U`) and folder toggle chevrons.
+  - **Files Pane Mode**: Sits in your sidebar panel or split pane, browsing the active space's workspace tree with Git status badges (`A`, `M`, `D`, `U`), folder toggle chevrons, a hover copy-path button, and a right-click menu with `Open file` and `Copy path`.
   - **File Editor Tab Mode**: Opens files in full-size Herdr tabs (`#file-editor-tab`) with a clean 38px toolbar and full reading comfort.
 - **Tab Deduplication & Disambiguation**:
   - Clicking a file reuses an existing open tab for that file instead of creating duplicate tabs.

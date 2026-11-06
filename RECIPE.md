@@ -10,7 +10,7 @@ Inside any Herdr sidebar, split pane, or dedicated tab:
 
 - **Files Browser Pane (`#files`)**:
   - **Header**: Clean panel header displaying "Files" and the current workspace folder name.
-  - **Directory Tree (`#files-tree`)**: Collapsible folder hierarchy with vector chevrons (`chevron-down.svg`, `chevron-right.svg`), folder icons (`folder.svg`), file icons (`file.svg`), Git status porcelain marks (`A` in green, `M` in yellow/blocked, `D`/`U` in red), and selection highlighting when a file's tab is active.
+  - **Directory Tree (`#files-tree`)**: Collapsible folder hierarchy with vector chevrons (`chevron-down.svg`, `chevron-right.svg`), folder icons (`folder.svg`), file icons (`file.svg`), Git status porcelain marks (`A` in green, `M` in yellow/blocked, `D`/`U` in red), selection highlighting when a file's tab is active, a hover copy-path button beside the name, and a right-click menu (`Open file`, `Copy path`).
 - **Dedicated File Editor Tab (`#file-editor-tab`)**:
   - **Toolbar (`h(38)`)**: Matches Herdr diff tab craft with vector file icon, bold filename, truncated directory path, metadata pill showing line count and language name (e.g., `142 lines · JavaScript` or `85 lines · Markdown`), and a subtle `Read-only` badge.
   - **Markdown Mode Switcher**: For `.md`, `.markdown`, and `.mdx` files, a segmented toggle (`Preview` / `Code`) defaulting to rendered preview.
@@ -32,6 +32,7 @@ Inside any Herdr sidebar, split pane, or dedicated tab:
   - Checks location changes every 250ms in memory, so switching active spaces updates the file tree immediately.
   - Clicking a directory expands or collapses its contents.
   - **Clicking a file never opens the raw file inline inside the panel**. It calls `openFileTab(path)` to open or focus the file in its own Herdr tab.
+  - Right-clicking a row opens a context menu with `Open file` (files) and `Copy path`; it is clamped to the panel and dismissed by any outside press.
   - Reuses an already open, non-settled tab for the same file using `run("tab.select")` instead of creating duplicate tabs.
   - Disambiguates identical file names across different folders by prepending their parent directory (`dir/base`).
 - In File Editor tab mode:

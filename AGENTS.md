@@ -27,6 +27,8 @@ The mod operates in two distinct modes based on whether `props().file` is provid
      4. Fallback to `space.folder`.
    - Polls location in memory every 250ms so switching active spaces or tabs updates the file tree immediately, in addition to the 10s refresh timer and `watchFolder(root)`.
    - **Clicking a file (`!entry.dir`) NEVER opens the file inline or replaces the tree**. It invokes `this.openFileTab(path, cx)` which checks existing non-settled tabs, reuses matching tabs via `tab.select`, or opens a new dedicated Herdr tab with `tab.new`.
+   - Hovering a row tracks it as `hoveredPath` and reveals a copy-path control immediately after the entry name (folders included); it copies the absolute path through `resolveAbsolutePath` and stops propagation so the click never opens the entry.
+   - Right-clicking a row opens `#files-context-menu` at the pointer with `Open file` (files only, through `openFileTab`) and `Copy path`. The pane root records `filesOrigin`/`filesBounds` on mouse move so the menu is clamped inside the panel, and the `#files-context-backdrop` overlay closes it on any outside press.
 
 2. **File Editor Tab Mode (`props().file` is a non-empty string)**:
    - Renders a full-size file viewer tab (`#file-editor-tab`) for `{ folder, file, on?, viewMode?, wrap?, zoom? }`.
@@ -36,7 +38,7 @@ The mod operates in two distinct modes based on whether `props().file` is provid
      - For Markdown files (`.md`, `.markdown`, `.mdx`) and SVG files (`.svg`): segmented `Preview` / `Code` view switcher defaulting to `"preview"`.
      - For raster images and SVG previews: zoom controls (`−`, percentage, `+`), a reset-to-fit percentage button, and Cmd/Ctrl + wheel zooming. Zoom runs from 25% to 400%; 100% fits the picture to the pane and larger levels scroll in both directions.
      - In Code view: `Wrap` toggle button toggling soft wrapping on `EditorState` and persisting to `shared("file-editor.wrap")`.
-     - Copy button writing text to clipboard with toast notification.
+     - Copy button next to the file name writing text to the clipboard with a toast notification.
      - Refresh button reloading from disk.
    - Code rendering uses `EditorState.new` with syntax highlighting from `theme()` and font settings.
    - Markdown rendering is GitHub-style and built in `mods/file-editor/markdown-view.js`: `parseMarkdownBlocks` (file-logic.js) turns the source into blocks, which are drawn as headings with rules, code boxes, bordered tables, quote bars, list and task markers. Inline text (emphasis, code, links) goes through `TextView.markdown`, which takes no styling of its own.
