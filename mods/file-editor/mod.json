@@ -2,6 +2,6 @@
   "name": "file-editor",
   "version": "0.1.0",
   "title": "File Editor",
-  "description": "File browser panel and tabbed file viewer with syntax highlighting and Markdown preview",
+  "description": "File browser panel and tabbed file viewer with syntax highlighting, Markdown and SVG previews, picture zoom, and live reload",
   "place": "none"
 }

@@ -191,8 +191,99 @@ export function isMarkdownFile(filePath) {
 }
 
 /**
+ * Checks if a given file path is an SVG document.
+ *
+ * @param {string} [filePath]
+ * @returns {boolean}
+ */
+export function isSvgFile(filePath) {
+  const { ext } = splitPathInfo(filePath);
+  return ext === "svg";
+}
+
+/** Longest intrinsic side of a generated SVG preview, in pixels. */
+export const SVG_PREVIEW_SIZE = 1600;
+
+/**
+ * Rewrites an SVG root's width/height so the host rasterizes a crisp preview.
+ *
+ * The host image loader rasterizes an SVG at the intrinsic width/height in its
+ * root element and then scales that bitmap to the layout bounds. Icon SVGs are
+ * commonly 24×24 and turn blurry when enlarged, so the preview copy gets a
+ * large intrinsic size while its viewBox (and therefore its aspect ratio) is
+ * left untouched.
+ *
+ * @param {string} text SVG source
+ * @param {number} [maxSize=SVG_PREVIEW_SIZE] Longest side of the generated preview
+ * @returns {{ text: string, width: number, height: number } | null}
+ *   Rewritten SVG and its intrinsic size, or null when no root `<svg>` tag was found
+ */
+export function prepareSvgPreviewInfo(text, maxSize = SVG_PREVIEW_SIZE) {
+  if (typeof text !== "string") return null;
+  const root = /<svg\b[^>]*>/i.exec(text);
+  if (!root) return null;
+  const tag = root[0];
+
+  /** Reads a single length attribute, ignoring percentages and other units. */
+  const readLength = (name) => {
+    const attr = new RegExp(`\\s${name}\\s*=\\s*(["'])([^"']*)\\1`, "i").exec(tag);
+    if (!attr) return null;
+    const value = /^\s*(\d+(?:\.\d+)?)(?:px)?\s*$/i.exec(attr[2]);
+    return value ? Number(value[1]) : null;
+  };
+
+  const viewBoxAttr = /\sviewBox\s*=\s*(["'])([^"']*)\1/i.exec(tag);
+  const viewBox = viewBoxAttr ? viewBoxAttr[2].trim().split(/[\s,]+/).map(Number) : null;
+  const hasViewBox =
+    Array.isArray(viewBox) &&
+    viewBox.length === 4 &&
+    viewBox.every(Number.isFinite) &&
+    viewBox[2] > 0 &&
+    viewBox[3] > 0;
+
+  let width = hasViewBox ? viewBox[2] : readLength("width");
+  let height = hasViewBox ? viewBox[3] : readLength("height");
+  if (!width && !height) {
+    // The SVG specification's default viewport for a root without a size.
+    width = 300;
+    height = 150;
+  } else if (!width) {
+    width = height;
+  } else if (!height) {
+    height = width;
+  }
+
+  const target = Number.isFinite(maxSize) && maxSize > 0 ? maxSize : SVG_PREVIEW_SIZE;
+  const scale = target / Math.max(width, height);
+  const pxWidth = Math.max(1, Math.round(width * scale));
+  const pxHeight = Math.max(1, Math.round(height * scale));
+
+  const rewritten = tag
+    .replace(/\swidth\s*=\s*(["'])[^"']*\1/gi, "")
+    .replace(/\sheight\s*=\s*(["'])[^"']*\1/gi, "")
+    .replace(/^<svg/i, `<svg width="${pxWidth}" height="${pxHeight}"`);
+
+  return {
+    text: text.slice(0, root.index) + rewritten + text.slice(root.index + tag.length),
+    width: pxWidth,
+    height: pxHeight,
+  };
+}
+
+/**
+ * Rewrites an SVG root so the host rasterizes a crisp preview.
+ *
+ * @param {string} text SVG source
+ * @param {number} [maxSize=SVG_PREVIEW_SIZE] Longest side of the generated preview
+ * @returns {string | null} Rewritten SVG, or null when no root `<svg>` tag was found
+ */
+export function prepareSvgPreview(text, maxSize = SVG_PREVIEW_SIZE) {
+  return prepareSvgPreviewInfo(text, maxSize)?.text ?? null;
+}
+
+/**
  * Determines the default view mode for a file ("preview" or "code").
- * Markdown files default to "preview" unless explicitly set to "code".
+ * Markdown and SVG files default to "preview" unless explicitly set to "code".
  * All other files always use "code".
  *
  * @param {string} filePath
@@ -200,10 +291,10 @@ export function isMarkdownFile(filePath) {
  * @returns {"preview" | "code"}
  */
 export function defaultViewMode(filePath, requestedMode) {
-  if (!isMarkdownFile(filePath)) {
-    return "code";
+  if (isMarkdownFile(filePath) || isSvgFile(filePath)) {
+    return requestedMode === "code" ? "code" : "preview";
   }
-  return requestedMode === "code" ? "code" : "preview";
+  return "code";
 }
 
 /**
@@ -942,7 +1033,7 @@ export function fileIconPath(fileName, light = false) {
   return `mods/file-editor/icons/${variant}.svg`;
 }
 
-/** Raster image extensions, previewed as pictures. SVG stays a code view (it is text). */
+/** Raster image extensions, previewed as pictures. (SVG is vector/text and supports both preview and code). */
 const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif"]);
 
 /**
@@ -955,4 +1046,214 @@ export function isImageFile(fileName) {
   const lower = typeof fileName === "string" ? fileName.toLowerCase() : "";
   const dot = lower.lastIndexOf(".");
   return dot > 0 && IMAGE_EXTENSIONS.has(lower.slice(dot + 1));
+}
+
+/**
+ * Reads the pixel dimensions of a picture from its file header, without
+ * decoding the pixels. Used to lay out picture previews with the right aspect
+ * ratio and a zoom level that is relative to the fit-to-pane size.
+ *
+ * PNG, JPEG, GIF, BMP, WebP, ICO and AVIF are understood. Anything else (a
+ * truncated file, an exotic codec) returns null and the preview falls back to
+ * the host's natural-size rendering.
+ *
+ * @param {Uint8Array | ArrayLike<number> | null | undefined} bytes
+ * @returns {{ width: number, height: number } | null}
+ */
+export function imageHeaderSize(bytes) {
+  if (!bytes || typeof bytes.length !== "number" || bytes.length < 16) return null;
+  const data = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+
+  /** Reads an ASCII signature. */
+  const ascii = (start, length) => {
+    let out = "";
+    for (let i = 0; i < length; i += 1) out += String.fromCharCode(data[start + i]);
+    return out;
+  };
+
+  const size = (width, height) => (width > 0 && height > 0 ? { width, height } : null);
+
+  // PNG: 8-byte signature, IHDR width/height as big-endian uint32.
+  if (data[0] === 0x89 && ascii(1, 3) === "PNG" && ascii(12, 4) === "IHDR") {
+    return size(view.getUint32(16, false), view.getUint32(20, false));
+  }
+
+  // GIF: logical screen width/height as little-endian uint16.
+  if (/^GIF8[79]a$/.test(ascii(0, 6)) && data.length >= 10) {
+    return size(view.getUint16(6, true), view.getUint16(8, true));
+  }
+
+  // BMP: header width/height, usually bottom-up so the height can be negative.
+  if (ascii(0, 2) === "BM" && data.length >= 26) {
+    return size(Math.abs(view.getInt32(18, true)), Math.abs(view.getInt32(22, true)));
+  }
+
+  // JPEG: walk the marker segments until a start-of-frame carries the size.
+  if (data[0] === 0xff && data[1] === 0xd8) {
+    let i = 2;
+    while (i + 9 < data.length) {
+      if (data[i] !== 0xff) {
+        i += 1;
+        continue;
+      }
+      const marker = data[i + 1];
+      if (marker === 0xff) {
+        i += 1;
+        continue;
+      }
+      if (marker === 0x01 || marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) {
+        i += 2;
+        continue;
+      }
+      const length = view.getUint16(i + 2, false);
+      if (length < 2) break;
+      const isFrame =
+        marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+      if (isFrame) {
+        return size(view.getUint16(i + 7, false), view.getUint16(i + 5, false));
+      }
+      i += 2 + length;
+    }
+    return null;
+  }
+
+  // WebP: RIFF container with VP8 (lossy), VP8L (lossless) or VP8X (extended).
+  if (ascii(0, 4) === "RIFF" && ascii(8, 4) === "WEBP") {
+    let i = 12;
+    while (i + 8 <= data.length) {
+      const type = ascii(i, 4);
+      const length = view.getUint32(i + 4, true);
+      const payload = i + 8;
+      if (type === "VP8X" && payload + 10 <= data.length) {
+        const width = 1 + data[payload + 4] + (data[payload + 5] << 8) + (data[payload + 6] << 16);
+        const height = 1 + data[payload + 7] + (data[payload + 8] << 8) + (data[payload + 9] << 16);
+        return size(width, height);
+      }
+      if (type === "VP8 " && payload + 10 <= data.length) {
+        return size(view.getUint16(payload + 6, true) & 0x3fff, view.getUint16(payload + 8, true) & 0x3fff);
+      }
+      if (type === "VP8L" && payload + 5 <= data.length && data[payload] === 0x2f) {
+        const bits = view.getUint32(payload + 1, true);
+        return size((bits & 0x3fff) + 1, ((bits >>> 14) & 0x3fff) + 1);
+      }
+      i = payload + length + (length & 1);
+    }
+    return null;
+  }
+
+  // AVIF: ISO BMFF boxes. Find the still-image size in meta/iprp/ipco/ispe,
+  // taking the largest one when a file carries several.
+  if (ascii(4, 4) === "ftyp") {
+    let best = null;
+    /** Walks the boxes in [start, end), calling visit(type, payloadStart, boxEnd). */
+    const walk = (start, end, visit) => {
+      let i = start;
+      while (i + 8 <= end) {
+        let boxSize = view.getUint32(i, false);
+        const type = ascii(i + 4, 4);
+        let header = 8;
+        if (boxSize === 1 && i + 16 <= end) {
+          // 64-bit size: two big-endian uint32 halves, no BigInt required.
+          const high = view.getUint32(i + 8, false);
+          const low = view.getUint32(i + 12, false);
+          boxSize = high * 2 ** 32 + low;
+          header = 16;
+        } else if (boxSize === 0) {
+          boxSize = end - i;
+        }
+        if (boxSize < header || i + boxSize > end) break;
+        visit(type, i + header, i + boxSize);
+        i += boxSize;
+      }
+    };
+
+    walk(0, data.length, (type, payload, end) => {
+      if (type !== "meta") return;
+      walk(payload + 4, end, (child, childPayload, childEnd) => {
+        if (child !== "iprp") return;
+        walk(childPayload, childEnd, (iprpChild, ipcoPayload, ipcoEnd) => {
+          if (iprpChild !== "ipco") return;
+          walk(ipcoPayload, ipcoEnd, (property, ispePayload, ispeEnd) => {
+            if (property !== "ispe" || ispePayload + 12 > ispeEnd) return;
+            const width = view.getUint32(ispePayload + 4, false);
+            const height = view.getUint32(ispePayload + 8, false);
+            if (width > 0 && height > 0 && (!best || width * height > best.width * best.height)) {
+              best = { width, height };
+            }
+          });
+        });
+      });
+    });
+    return best;
+  }
+
+  // ICO/CUR: 16-byte directory entry; a zero dimension means 256.
+  if (data[0] === 0 && data[1] === 0 && data[2] === 1 && data[3] === 0) {
+    return size(data[6] || 256, data[7] || 256);
+  }
+
+  return null;
+}
+
+/**
+ * Zoom steps for picture previews, as scale factors where 1 means "fit the
+ * pane". The steps are uneven on purpose: small adjustments around 100%, then
+ * larger jumps toward the extremes.
+ *
+ * @type {readonly number[]}
+ */
+export const IMAGE_ZOOM_LEVELS = Object.freeze([0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4]);
+
+/** Smallest selectable picture preview zoom. */
+export const IMAGE_ZOOM_MIN = IMAGE_ZOOM_LEVELS[0];
+
+/** Largest selectable picture preview zoom. */
+export const IMAGE_ZOOM_MAX = IMAGE_ZOOM_LEVELS[IMAGE_ZOOM_LEVELS.length - 1];
+
+/**
+ * Coerces an arbitrary value into a supported picture preview zoom.
+ * Invalid or non-finite input falls back to 100% (fit to pane).
+ *
+ * @param {unknown} value
+ * @returns {number}
+ */
+export function normalizeImageZoom(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 1;
+  return Math.min(IMAGE_ZOOM_MAX, Math.max(IMAGE_ZOOM_MIN, value));
+}
+
+/**
+ * Moves to the next zoom level in the given direction.
+ *
+ * @param {unknown} current Current zoom, already clamped or not.
+ * @param {number} direction Positive zooms in, negative zooms out, 0 is a no-op.
+ * @returns {number}
+ */
+export function stepImageZoom(current, direction) {
+  const zoom = normalizeImageZoom(current);
+  if (!Number.isFinite(direction) || direction === 0) return zoom;
+
+  if (direction > 0) {
+    for (const level of IMAGE_ZOOM_LEVELS) {
+      if (level > zoom) return level;
+    }
+    return IMAGE_ZOOM_MAX;
+  }
+
+  for (let i = IMAGE_ZOOM_LEVELS.length - 1; i >= 0; i -= 1) {
+    if (IMAGE_ZOOM_LEVELS[i] < zoom) return IMAGE_ZOOM_LEVELS[i];
+  }
+  return IMAGE_ZOOM_MIN;
+}
+
+/**
+ * Formats a zoom factor as the width used by the preview canvas and as the
+ * label in the toolbar ("125%").
+ *
+ * @param {unknown} zoom
+ * @returns {`${number}%`}
+ */
+export function imageZoomPercent(zoom) {
+  return /** @type {`${number}%`} */ (`${Math.round(normalizeImageZoom(zoom) * 100)}%`);
 }

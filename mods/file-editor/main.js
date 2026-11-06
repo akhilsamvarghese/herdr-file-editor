@@ -7,11 +7,14 @@
  * Mode 2 (File Editor Tab): When props().file is set, renders a full-pane editor tab with:
  * - Syntax highlighting (Editor / EditorState) for code and configuration files.
  * - GitHub-style Markdown preview (markdown-view.js) for .md / .markdown / .mdx.
+ * - Rendered SVG preview for .svg, with a Code view toggle.
+ * - Zoomable, pannable raster image and SVG previews (25%–400%).
  * - Soft-wrap toggle, copy button, file reload, and live disk watching.
  */
 
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState } from "gpui-base";
+import { readFile as readBinaryFile } from "fs/promises";
 import {
   spaces,
   panes,
@@ -20,6 +23,7 @@ import {
   exec,
   readTextFile,
   watchFolder,
+  writeTextFile,
   theme,
   settings,
   window,
@@ -35,6 +39,8 @@ import {
   resolveAbsolutePath,
   detectLanguage,
   isMarkdownFile,
+  isSvgFile,
+  prepareSvgPreviewInfo,
   defaultViewMode,
   prepareFileText,
   shouldReloadWatchedFile,
@@ -45,6 +51,12 @@ import {
   fileIconPath,
   isLightColor,
   isImageFile,
+  imageHeaderSize,
+  IMAGE_ZOOM_MAX,
+  IMAGE_ZOOM_MIN,
+  normalizeImageZoom,
+  stepImageZoom,
+  imageZoomPercent,
   FOLDER_ICON_PATH,
 } from "./file-logic.js";
 import { renderMarkdownDocument } from "./markdown-view.js";
@@ -52,6 +64,12 @@ import { renderMarkdownDocument } from "./markdown-view.js";
 /** Max entries displayed per directory and total tree bounds. */
 const PER_FOLDER = 500;
 const TOTAL = 5000;
+
+/** Height of the file tab's header toolbar, in pixels. */
+const HEADER_HEIGHT = 38;
+
+/** Padding around a picture preview inside its scroll area, in pixels. */
+const PICTURE_PADDING = 24;
 
 /**
  * Lists the contents of a directory using PowerShell on Windows and POSIX sh on Unix/macOS.
@@ -134,6 +152,8 @@ export default class FileEditor extends View {
     this.watchToken = null;
     this.hoveredPath = null;
     this.editorInputs = null;
+    this.imageSize = null;
+    this.pictureViewport = null;
     if (this.code) {
       this.code.release();
       this.code = null;
@@ -169,7 +189,12 @@ export default class FileEditor extends View {
     this.lineCount = 0;
     this.isBinary = false;
     this.isImage = isImageFile(this.file);
+    this.isSvg = isSvgFile(this.file);
     this.imageSrc = null;
+    this.imageLoading = false;
+    this.imageSize = null;
+    this.imageZoom = normalizeImageZoom(typeof p.zoom === "number" ? p.zoom : 1);
+    this.pictureViewport = null;
     this.isTruncated = false;
     this.loading = false;
     this.reloadPending = false;
@@ -242,7 +267,8 @@ export default class FileEditor extends View {
       }
     }
 
-    const isCodeView = !isMarkdownFile(this.file) || this.viewMode === "code";
+    const hasPreview = isMarkdownFile(this.file) || this.isSvg;
+    const isCodeView = !hasPreview || this.viewMode === "code";
     if (isCodeView && this.preparedText !== null && !this.isBinary) {
       const appSettings = settings() || {};
       const syntax = buildSyntaxTheme(theme());
@@ -293,8 +319,11 @@ export default class FileEditor extends View {
         this.isBinary = isBinary;
         this.isTruncated = isTruncated;
 
+        if (this.isSvg) this.loadImage(cx);
+
         if (this.preparedText !== null && !this.isBinary) {
-          if (!isMarkdownFile(this.file) || this.viewMode === "code") {
+          const hasPreview = isMarkdownFile(this.file) || this.isSvg;
+          if (!hasPreview || this.viewMode === "code") {
             this.rebuildEditor();
           } else {
             this.code?.release();
@@ -339,7 +368,8 @@ export default class FileEditor extends View {
       return;
     }
 
-    if (isMarkdownFile(this.file) && this.viewMode !== "code") {
+    const hasPreview = isMarkdownFile(this.file) || this.isSvg;
+    if (hasPreview && this.viewMode !== "code") {
       this.code?.release();
       this.code = null;
       this.editorInputs = null;
@@ -424,8 +454,154 @@ export default class FileEditor extends View {
     this.viewMode = mode;
     if (mode === "code" && !this.code) {
       this.rebuildEditor();
+    } else if (mode === "preview" && this.isSvg && !this.imageSrc && !this.imageLoading) {
+      this.loadImage(cx);
     }
     cx.notify();
+  }
+
+  /**
+   * Whether the active tab shows a picture that can be zoomed: a raster image,
+   * or an SVG while its rendered preview (not the code view) is selected.
+   * Remote files have no preview at all, so they offer no controls.
+   *
+   * @returns {boolean}
+   */
+  showsPicturePreview() {
+    return !this.on && (this.isImage || (this.isSvg && this.viewMode === "preview"));
+  }
+
+  /**
+   * Steps the picture preview zoom through the shared level ladder.
+   *
+   * @param {number} direction Positive zooms in, negative zooms out.
+   * @param {import("gpui-kit").ViewContext} cx
+   */
+  zoomPicture(direction, cx) {
+    const next = stepImageZoom(this.imageZoom, direction);
+    if (next === normalizeImageZoom(this.imageZoom)) return;
+    this.imageZoom = next;
+    cx.notify();
+  }
+
+  /**
+   * Returns the picture preview to fit-to-pane (100%).
+   *
+   * @param {import("gpui-kit").ViewContext} cx
+   */
+  resetPictureZoom(cx) {
+    if (this.imageZoom === 1) return;
+    this.imageZoom = 1;
+    cx.notify();
+  }
+
+  /**
+   * Cmd/Ctrl + wheel zooms the picture instead of scrolling it. Plain wheel
+   * scrolling keeps panning the zoomed canvas, which is what overflow_scrollbar
+   * owns. The wheel bounds are the preview viewport itself, so they also give
+   * the pixel sizing path an exact pane size without waiting for a pointer move.
+   *
+   * @param {import("gpui-kit").ScrollWheelEvent} event
+   * @param {import("gpui-kit").Context} cx
+   */
+  handlePictureWheel(event, cx) {
+    const bounds = event.bounds;
+    if (bounds) {
+      this.pictureViewport = { width: Math.round(bounds.width), height: Math.round(bounds.height) };
+    }
+    const modifiers = event.modifiers || {};
+    if (!modifiers.platform && !modifiers.control) return;
+    const delta = event.delta?.y || event.delta?.x || 0;
+    if (delta === 0) return;
+    this.zoomPicture(delta < 0 ? 1 : -1, cx);
+    cx.stop_propagation();
+  }
+
+  /**
+   * Remembers the tab's bounds as the picture viewport, so the pixel-based fit
+   * math has the real pane size. Called from pointer events on the tab root,
+   * before a click reaches the zoom controls.
+   *
+   * @param {{ width: number, height: number } | undefined} bounds
+   * @param {import("gpui-kit").Context} cx
+   */
+  rememberViewport(bounds, cx) {
+    if (!bounds || !this.showsPicturePreview()) return;
+    const width = Math.round(bounds.width);
+    const height = Math.max(1, Math.round(bounds.height - HEADER_HEIGHT));
+    const previous = this.pictureViewport;
+    if (previous && previous.width === width && previous.height === height) return;
+    this.pictureViewport = { width, height };
+    // The percentage fallback fits by width; the measured path also fits by
+    // height and centers the picture. Repaint once the real size is known.
+    cx.notify();
+  }
+
+  /**
+   * Renders the zoom out / percentage / zoom in group shown beside the view
+   * switcher for picture previews. The percentage doubles as the reset-to-fit
+   * button.
+   *
+   * @param {Record<string, string>} t
+   * @returns {import("gpui-kit").Element}
+   */
+  renderZoomControls(t) {
+    const zoom = normalizeImageZoom(this.imageZoom);
+
+    /**
+     * @param {string} id
+     * @param {string} label
+     * @param {string} tooltip
+     * @param {boolean} enabled
+     * @param {(cx: import("gpui-kit").ViewContext) => void} onClick
+     */
+    const button = (id, label, tooltip, enabled, onClick) =>
+      div()
+        .id(id)
+        .w(20)
+        .h(20)
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(4)
+        .text_size(12)
+        .cursor_pointer()
+        .when(enabled, (b) => b.text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground)))
+        .when(!enabled, (b) => b.opacity(0.35))
+        .tooltip(tooltip)
+        .on_click((_e, cx) => {
+          if (enabled) onClick(cx);
+        })
+        .child(label);
+
+    return h_flex()
+      .id("file-editor-zoom")
+      .flex_none()
+      .items_center()
+      .gap(1)
+      .p(2)
+      .rounded(6)
+      .bg(t.raised)
+      .child(button("file-zoom-out", "−", "Zoom out", zoom > IMAGE_ZOOM_MIN, (cx) => this.zoomPicture(-1, cx)))
+      .child(
+        div()
+          .id("file-zoom-reset")
+          .min_w(40)
+          .h(20)
+          .flex()
+          .items_center()
+          .justify_center()
+          .rounded(4)
+          .text_size(10)
+          .cursor_pointer()
+          .text_color(t.muted)
+          .hover((s) => s.bg(t.hover).text_color(t.foreground))
+          .tooltip("Reset zoom to fit")
+          .on_click((_e, cx) => this.resetPictureZoom(cx))
+          .child(imageZoomPercent(zoom))
+      )
+      .child(button("file-zoom-in", "+", "Zoom in", zoom < IMAGE_ZOOM_MAX, (cx) => this.zoomPicture(1, cx)));
   }
 
   /**
@@ -468,11 +644,13 @@ export default class FileEditor extends View {
     const t = theme();
     const { base, dir } = splitPathInfo(this.file);
     const isMarkdown = isMarkdownFile(this.file);
+    const isSvg = this.isSvg;
+    const hasPreview = isMarkdown || isSvg;
     const { label: langLabel } = detectLanguage(this.file);
     const lineLabel = this.isImage
       ? `Image · ${(base.split(".").pop() || "").toUpperCase()}`
       : `${this.lineCount} line${this.lineCount === 1 ? "" : "s"} · ${langLabel}`;
-    const isCodeView = !this.isImage && (!isMarkdown || this.viewMode === "code");
+    const isCodeView = !this.isImage && (!hasPreview || this.viewMode === "code");
 
     return v_flex()
       .id("file-editor-tab")
@@ -481,9 +659,11 @@ export default class FileEditor extends View {
       .bg(t.background)
       .text_color(t.foreground)
       .text_size(13)
+      .on_mouse_move((event, cx) => this.rememberViewport(event?.bounds, cx))
+      .on_mouse_down("left", (event, cx) => this.rememberViewport(event?.bounds, cx))
       .child(
         h_flex()
-          .h(38)
+          .h(HEADER_HEIGHT)
           .flex_none()
           .px(12)
           .gap(8)
@@ -516,7 +696,7 @@ export default class FileEditor extends View {
               .text_color(t.dim)
               .child("Read-only")
           )
-          .when(isMarkdown, (e) =>
+          .when(hasPreview, (e) =>
             e.child(
               h_flex()
                 .flex_none()
@@ -536,7 +716,7 @@ export default class FileEditor extends View {
                     .when(this.viewMode === "preview", (btn) => btn.bg(t.selected).text_color(t.foreground))
                     .when(this.viewMode !== "preview", (btn) => btn.text_color(t.dim))
                     .hover((s) => s.bg(this.viewMode === "preview" ? t.selected : t.hover))
-                    .tooltip("Rendered Markdown preview")
+                    .tooltip(isSvg ? "Rendered SVG preview" : "Rendered Markdown preview")
                     .on_click((_e, cx) => this.setViewMode("preview", cx))
                     .child("Preview")
                 )
@@ -557,6 +737,7 @@ export default class FileEditor extends View {
                 )
             )
           )
+          .when(this.showsPicturePreview(), (e) => e.child(this.renderZoomControls(t)))
           .when(isCodeView, (e) =>
             e.child(
               div()
@@ -630,7 +811,9 @@ export default class FileEditor extends View {
           : this.isImage
             ? this.renderImageView(t)
             : !isCodeView
-              ? this.renderMarkdownView(t)
+              ? isMarkdown
+                ? this.renderMarkdownView(t)
+                : this.renderSvgView(t)
               : this.renderCodeView(t)
       );
   }
@@ -645,6 +828,10 @@ export default class FileEditor extends View {
    */
   loadImage(cx) {
     if (!this.file || this.closed || this.on) return;
+    if (this.isSvg) {
+      this.loadSvgImage(cx);
+      return;
+    }
     const src = this.root ? `${this.root}/${this.file}` : this.file;
     const ext = splitPathInfo(this.file).ext;
     const safe = src.replace(/[^A-Za-z0-9._-]+/g, "_").slice(-120);
@@ -652,13 +839,20 @@ export default class FileEditor extends View {
     const home = appHome();
     // Copy, then drop every older copy of this same image.
     const script = 'mkdir -p "$1" && cp -f "$4" "$3" && for old in "$1/$2"-*; do [ "$old" = "$3" ] || rm -f "$old"; done';
+    this.imageLoading = true;
     cx.spawn(async (cx) => {
-      const r = await exec("sh", ["-c", script, "copy", `${home}/cache/file-editor`, safe, `${home}/${rel}`, src]).catch(() => null);
+      const [r, bytes] = await Promise.all([
+        exec("sh", ["-c", script, "copy", `${home}/cache/file-editor`, safe, `${home}/${rel}`, src]).catch(() => null),
+        readBinaryFile(src).catch(() => null),
+      ]);
       if (this.closed) return;
+      this.imageLoading = false;
       if (r?.code === 0) {
+        this.imageSize = bytes ? imageHeaderSize(bytes) : null;
         this.imageSrc = rel;
         this.fileError = null;
       } else {
+        this.imageSize = null;
         this.imageSrc = null;
         this.fileError = "Could not load this image.";
       }
@@ -667,7 +861,50 @@ export default class FileEditor extends View {
   }
 
   /**
-   * Shows a raster image at its natural size, scaled down to fit the pane.
+   * Writes an enlarged copy of the SVG source to the cache and points the
+   * preview at it. The host rasterizes SVG at the root width/height, so the
+   * copy is scaled up to keep small icon view boxes crisp.
+   *
+   * @param {import("gpui-kit").ViewContext} cx
+   */
+  loadSvgImage(cx) {
+    if (typeof this.rawText !== "string") return;
+    const src = this.root ? `${this.root}/${this.file}` : this.file;
+    const safe = src.replace(/[^A-Za-z0-9._-]+/g, "_").slice(-120);
+    const rel = `cache/file-editor/${safe}-${Date.now()}.svg`;
+    const home = appHome();
+    const dir = `${home}/cache/file-editor`;
+    const fullPath = `${home}/${rel}`;
+    const prepared = this.isTruncated ? null : prepareSvgPreviewInfo(this.rawText);
+    this.imageLoading = true;
+    cx.spawn(async (cx) => {
+      let ok = false;
+      try {
+        await exec("sh", ["-c", 'mkdir -p "$1"', "cache", dir]);
+        if (prepared === null) {
+          // Unrecognized or truncated source: let the host render the original.
+          const r = await exec("sh", ["-c", 'cp -f "$1" "$2"', "copy", src, fullPath]);
+          ok = r.code === 0;
+        } else {
+          await writeTextFile(fullPath, prepared.text, null);
+          ok = true;
+        }
+        // Drop every older copy of this same SVG.
+        await exec("sh", ["-c", 'for old in "$1/$2"-*; do [ "$old" = "$3" ] || rm -f "$old"; done', "clean", dir, safe, fullPath]).catch(() => null);
+      } catch {
+        ok = false;
+      }
+      if (this.closed) return;
+      this.imageLoading = false;
+      this.imageSize = ok && prepared ? { width: prepared.width, height: prepared.height } : null;
+      this.imageSrc = ok ? rel : null;
+      cx.notify();
+    });
+  }
+
+  /**
+   * Shows a raster image on a zoomable, pannable canvas. 100% fits the picture
+   * to the pane; higher zoom levels overflow and scroll.
    * The host reads images from this machine's disk, so remote files get a notice.
    *
    * @param {Record<string, string>} t
@@ -687,11 +924,139 @@ export default class FileEditor extends View {
       .id("file-editor-image")
       .flex_1()
       .min_h(0)
-      .p(24)
       .bg(t.background)
-      .items_center()
-      .justify_center()
-      .when(Boolean(this.imageSrc), (e) => e.child(image(this.imageSrc).max_w_full().max_h_full()));
+      .when(Boolean(this.imageSrc), (e) => e.child(this.renderPictureCanvas(t)))
+      .when(!this.imageSrc && Boolean(this.imageLoading || this.loading), (e) =>
+        e.p(24).items_center().justify_center().child(div().max_w(620).text_size(12).text_color(t.dim).child("Loading image…"))
+      )
+      .when(!this.imageSrc && !this.imageLoading && !this.loading, (e) =>
+        e
+          .p(24)
+          .items_center()
+          .justify_center()
+          .child(div().max_w(620).text_size(12).text_color(t.dim).child("Could not render image preview."))
+      );
+  }
+
+  /**
+   * Shows an SVG on a light canvas, scaled to fit the pane and zoomable like a
+   * raster image.
+   *
+   * Resvg has no `currentColor` context, so icons that inherit their color are
+   * drawn black. A light canvas keeps those visible on dark themes, and sizing
+   * the image to the pane makes small icon view boxes readable.
+   *
+   * @param {Record<string, string>} t
+   * @returns {import("gpui-kit").Element}
+   */
+  renderSvgView(t) {
+    if (this.on) {
+      return v_flex()
+        .flex_1()
+        .min_h(0)
+        .p(24)
+        .items_center()
+        .justify_center()
+        .child(div().max_w(620).text_size(12).text_color(t.dim).child("Image preview works only for files on this machine."));
+    }
+    return v_flex()
+      .id("file-editor-svg")
+      .flex_1()
+      .min_h(0)
+      .bg(t.background)
+      .when(Boolean(this.imageSrc), (e) => e.child(this.renderPictureCanvas(t, { whiteCanvas: true })))
+      .when(!this.imageSrc && Boolean(this.imageLoading || this.loading), (e) =>
+        e.p(24).items_center().justify_center().child(div().max_w(620).text_size(12).text_color(t.dim).child("Loading image…"))
+      )
+      .when(!this.imageSrc && !this.imageLoading && !this.loading, (e) =>
+        e
+          .p(24)
+          .items_center()
+          .justify_center()
+          .child(div().max_w(620).text_size(12).text_color(t.dim).child("Could not render image preview."))
+      );
+  }
+
+  /**
+   * Renders the picture with a zoom-relative size. With the pane size and the
+   * image's own dimensions known, the fit scale is computed so 100% is exactly
+   * "fit the pane"; larger levels grow from there and scroll. Until the pane
+   * has been measured (on the first pointer move), a percentage canvas keeps
+   * the 100% view fitting.
+   *
+   * @param {Record<string, string>} t
+   * @param {{ whiteCanvas?: boolean }} [options]
+   * @returns {import("gpui-kit").Element}
+   */
+  renderPictureCanvas(t, options = {}) {
+    const zoom = normalizeImageZoom(this.imageZoom);
+    const percent = imageZoomPercent(zoom);
+    const whiteCanvas = options.whiteCanvas === true;
+    const size = this.imageSize;
+    const viewport = this.pictureViewport;
+
+    const container = v_flex()
+      .id("file-editor-picture")
+      .flex_1()
+      .min_h(0)
+      .overflow_scrollbar()
+      .bg(t.background)
+      .on_scroll_wheel((event, cx) => this.handlePictureWheel(event, cx));
+
+    if (!size || !viewport || viewport.width <= 0 || viewport.height <= 0) {
+      if (!size) {
+        // Dimensions unknown (an unsupported header): fall back to the host's
+        // natural-size rendering inside the pane.
+        return container.items_center().justify_center().child(
+          v_flex()
+            .flex_none()
+            .p(PICTURE_PADDING)
+            .items_center()
+            .justify_center()
+            .when(whiteCanvas, (e) => e.bg("#ffffff").rounded(8).border(1).border_color(t.border))
+            .child(image(this.imageSrc).max_w_full().max_h_full())
+        );
+      }
+      // Before the pane has been measured, fit by width using a percentage
+      // aspect box: the padding-top resolves against the box's own width, so
+      // the picture keeps its ratio without knowing the pane in pixels.
+      const aspect = size.height > 0 ? size.width / size.height : 1;
+      const aspectPadding = Math.min(4000, 100 / aspect);
+      return container.items_center().child(
+        v_flex()
+          .w(percent)
+          .flex_none()
+          .m_auto()
+          .p(PICTURE_PADDING)
+          .when(zoom === 1, (e) => e.max_w(size.width + PICTURE_PADDING * 2))
+          .when(whiteCanvas, (e) => e.bg("#ffffff").rounded(8).border(1).border_color(t.border))
+          .child(
+            v_flex()
+              .relative()
+              .w_full()
+              .pt(`${Math.round(aspectPadding * 10000) / 10000}%`)
+              .child(image(this.imageSrc).absolute().inset_0().w_full().h_full())
+          )
+      );
+    }
+
+    // Fit the whole picture inside the pane at 100%, never enlarging it.
+    const availableWidth = Math.max(1, viewport.width - PICTURE_PADDING * 2);
+    const availableHeight = Math.max(1, viewport.height - PICTURE_PADDING * 2);
+    const fitScale = Math.min(1, availableWidth / size.width, availableHeight / size.height);
+    const width = Math.max(1, Math.round(size.width * fitScale * zoom));
+    const height = Math.max(1, Math.round(size.height * fitScale * zoom));
+
+    return container
+      .when(zoom <= 1, (e) => e.items_center().justify_center())
+      .when(zoom > 1, (e) => e.items_start())
+      .child(
+        v_flex()
+          .flex_none()
+          .p(PICTURE_PADDING)
+          .when(whiteCanvas, (e) => e.bg("#ffffff").rounded(8).border(1).border_color(t.border))
+          .child(image(this.imageSrc).w(width).h(height))
+      );
   }
 
   /**

@@ -9,6 +9,9 @@ import {
   resolveAbsolutePath,
   detectLanguage,
   isMarkdownFile,
+  isSvgFile,
+  prepareSvgPreview,
+  prepareSvgPreviewInfo,
   defaultViewMode,
   prepareFileText,
   shouldReloadWatchedFile,
@@ -20,6 +23,13 @@ import {
   fileIconPath,
   isLightColor,
   isImageFile,
+  imageHeaderSize,
+  IMAGE_ZOOM_LEVELS,
+  IMAGE_ZOOM_MIN,
+  IMAGE_ZOOM_MAX,
+  normalizeImageZoom,
+  stepImageZoom,
+  imageZoomPercent,
   FILE_ICON_DEFAULT,
   FILE_ICON_BY_EXT,
   FILE_ICON_BY_NAME,
@@ -180,13 +190,87 @@ test("isMarkdownFile - detects markdown extensions case-insensitively", () => {
   assert.equal(isMarkdownFile(null), false);
 });
 
-test("defaultViewMode - markdown defaults to preview, others to code", () => {
+test("isSvgFile - detects svg extensions case-insensitively", () => {
+  assert.equal(isSvgFile("icon.svg"), true);
+  assert.equal(isSvgFile("GRAPHIC.SVG"), true);
+  assert.equal(isSvgFile("sub/folder/illustration.svg"), true);
+
+  assert.equal(isSvgFile("main.js"), false);
+  assert.equal(isSvgFile("style.css"), false);
+  assert.equal(isSvgFile("photo.png"), false);
+  assert.equal(isSvgFile("svg"), false);
+  assert.equal(isSvgFile(""), false);
+  assert.equal(isSvgFile(null), false);
+});
+
+test("prepareSvgPreview - scales the root to a crisp intrinsic size", () => {
+  // Icon with only a viewBox: width/height are added from the viewBox ratio.
+  const icon = '<svg viewBox="0 0 24 24" fill="none"><path d="M0 0h24v24H0z"/></svg>';
+  assert.equal(
+    prepareSvgPreview(icon, 240),
+    '<svg width="240" height="240" viewBox="0 0 24 24" fill="none"><path d="M0 0h24v24H0z"/></svg>'
+  );
+
+  // Non-square viewBox keeps its aspect ratio.
+  const wide = '<svg viewBox="0 0 200 100"><rect width="200" height="100"/></svg>';
+  assert.match(prepareSvgPreview(wide, 400), /^<svg width="400" height="200" viewBox="0 0 200 100">/);
+
+  // Existing width/height (including units) are replaced, not duplicated.
+  const sized = '<svg width="24px" height="12" viewBox="0 0 24 12"></svg>';
+  assert.equal(prepareSvgPreview(sized, 240), '<svg width="240" height="120" viewBox="0 0 24 12"></svg>');
+
+  // No viewBox: existing width/height define the aspect ratio.
+  const sizedOnly = '<svg width="320" height="180"></svg>';
+  assert.match(prepareSvgPreview(sizedOnly, 640), /^<svg width="640" height="360">/);
+
+  // No size information: use the SVG default 300×150 viewport.
+  const bare = "<svg></svg>";
+  assert.equal(prepareSvgPreview(bare, 300), '<svg width="300" height="150"></svg>');
+
+  // Percentages are ignored in favor of the default viewport.
+  const percent = '<svg width="100%" height="100%"></svg>';
+  assert.equal(prepareSvgPreview(percent, 300), '<svg width="300" height="150"></svg>');
+
+  // Leading XML/doctype content is preserved.
+  const xml = '<?xml version="1.0"?>\n<svg viewBox="0 0 10 10"></svg>';
+  assert.match(prepareSvgPreview(xml, 100), /^<\?xml version="1.0"\?>\n<svg width="100" height="100"/);
+
+  // Not an SVG, empty, or non-string input.
+  assert.equal(prepareSvgPreview("<html></html>"), null);
+  assert.equal(prepareSvgPreview(""), null);
+  assert.equal(prepareSvgPreview(null), null);
+});
+
+test("prepareSvgPreviewInfo - reports the rewritten intrinsic size", () => {
+  const wide = '<svg viewBox="0 0 200 100"><rect width="200" height="100"/></svg>';
+  const info = prepareSvgPreviewInfo(wide, 400);
+  assert.equal(info.width, 400);
+  assert.equal(info.height, 200);
+  assert.equal(info.text, prepareSvgPreview(wide, 400));
+
+  const icon = '<svg viewBox="0 0 24 24"></svg>';
+  assert.deepEqual(
+    (({ width, height }) => ({ width, height }))(prepareSvgPreviewInfo(icon, 240)),
+    { width: 240, height: 240 }
+  );
+
+  assert.equal(prepareSvgPreviewInfo("<html></html>"), null);
+  assert.equal(prepareSvgPreviewInfo(null), null);
+});
+
+test("defaultViewMode - markdown and svg default to preview, others to code", () => {
   // Markdown
   assert.equal(defaultViewMode("README.md"), "preview");
   assert.equal(defaultViewMode("README.md", "preview"), "preview");
   assert.equal(defaultViewMode("README.md", "code"), "code");
 
-  // Non-markdown (always code)
+  // SVG
+  assert.equal(defaultViewMode("diagram.svg"), "preview");
+  assert.equal(defaultViewMode("diagram.svg", "preview"), "preview");
+  assert.equal(defaultViewMode("diagram.svg", "code"), "code");
+  assert.equal(defaultViewMode("DIAGRAM.SVG"), "preview");
+
+  // Non-previewable (always code)
   assert.equal(defaultViewMode("main.js"), "code");
   assert.equal(defaultViewMode("main.js", "preview"), "code");
   assert.equal(defaultViewMode("style.css", "code"), "code");
@@ -640,4 +724,128 @@ test("isImageFile - raster images are pictures, SVG and text are not", () => {
   assert.equal(isImageFile("png"), false);
   assert.equal(isImageFile(".png"), false);
   assert.equal(isImageFile(""), false);
+});
+
+test("imageHeaderSize - reads dimensions without decoding pixels", () => {
+  const bytes = (length) => new Uint8Array(length);
+  const view = (data) => new DataView(data.buffer);
+  const ascii = (data, offset, text) => {
+    for (let i = 0; i < text.length; i += 1) data[offset + i] = text.charCodeAt(i);
+  };
+
+  const png = bytes(24);
+  png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+  ascii(png, 12, "IHDR");
+  view(png).setUint32(16, 640);
+  view(png).setUint32(20, 480);
+  assert.deepEqual(imageHeaderSize(png), { width: 640, height: 480 });
+
+  const gif = bytes(16);
+  ascii(gif, 0, "GIF89a");
+  view(gif).setUint16(6, 320, true);
+  view(gif).setUint16(8, 200, true);
+  assert.deepEqual(imageHeaderSize(gif), { width: 320, height: 200 });
+
+  const bmp = bytes(26);
+  ascii(bmp, 0, "BM");
+  view(bmp).setInt32(18, 1024, true);
+  view(bmp).setInt32(22, -768, true);
+  assert.deepEqual(imageHeaderSize(bmp), { width: 1024, height: 768 });
+
+  const jpeg = bytes(24);
+  jpeg.set([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08], 0);
+  view(jpeg).setUint16(7, 300, false);
+  view(jpeg).setUint16(9, 500, false);
+  assert.deepEqual(imageHeaderSize(jpeg), { width: 500, height: 300 });
+
+  const webp = bytes(30);
+  ascii(webp, 0, "RIFF");
+  ascii(webp, 8, "WEBP");
+  ascii(webp, 12, "VP8X");
+  view(webp).setUint32(16, 10, true);
+  webp[24] = 799 & 0xff;
+  webp[25] = (799 >> 8) & 0xff;
+  webp[26] = (799 >> 16) & 0xff;
+  webp[27] = 449 & 0xff;
+  webp[28] = (449 >> 8) & 0xff;
+  webp[29] = (449 >> 16) & 0xff;
+  assert.deepEqual(imageHeaderSize(webp), { width: 800, height: 450 });
+
+  const ico = bytes(22);
+  ico.set([0, 0, 1, 0, 1, 0, 32, 24], 0);
+  assert.deepEqual(imageHeaderSize(ico), { width: 32, height: 24 });
+
+  // Minimal AVIF: ftyp + meta/iprp/ipco/ispe.
+  const avif = bytes(68);
+  const dv = view(avif);
+  let o = 0;
+  const box = (size, type) => {
+    dv.setUint32(o, size, false);
+    ascii(avif, o + 4, type);
+    o += 8;
+  };
+  box(20, "ftyp");
+  ascii(avif, o, "avif");
+  o += 4;
+  dv.setUint32(o, 0, false);
+  o += 4;
+  ascii(avif, o, "mif1");
+  o += 4;
+  box(48, "meta");
+  dv.setUint32(o, 0, false);
+  o += 4;
+  box(36, "iprp");
+  box(28, "ipco");
+  box(20, "ispe");
+  dv.setUint32(o, 0, false);
+  o += 4;
+  dv.setUint32(o, 640, false);
+  o += 4;
+  dv.setUint32(o, 480, false);
+  o += 4;
+  assert.deepEqual(imageHeaderSize(avif), { width: 640, height: 480 });
+
+  assert.equal(imageHeaderSize(new Uint8Array([0, 1, 2, 3])), null);
+  assert.equal(imageHeaderSize(new Uint8Array(32)), null);
+  assert.equal(imageHeaderSize(null), null);
+  assert.equal(imageHeaderSize(undefined), null);
+});
+
+test("normalizeImageZoom - clamps to the supported range and defaults to fit", () => {
+  assert.equal(normalizeImageZoom(1), 1);
+  assert.equal(normalizeImageZoom(0.1), IMAGE_ZOOM_MIN);
+  assert.equal(normalizeImageZoom(99), IMAGE_ZOOM_MAX);
+  assert.equal(normalizeImageZoom(-2), IMAGE_ZOOM_MIN);
+  assert.equal(normalizeImageZoom(Number.NaN), 1);
+  assert.equal(normalizeImageZoom(Infinity), 1);
+  assert.equal(normalizeImageZoom("2"), 1);
+  assert.equal(normalizeImageZoom(undefined), 1);
+});
+
+test("stepImageZoom - walks the level ladder and stops at the ends", () => {
+  assert.equal(stepImageZoom(1, 1), 1.25);
+  assert.equal(stepImageZoom(1, -1), 0.75);
+  assert.equal(stepImageZoom(0.25, -1), IMAGE_ZOOM_MIN);
+  assert.equal(stepImageZoom(4, 1), IMAGE_ZOOM_MAX);
+  assert.equal(stepImageZoom(1, 0), 1);
+  assert.equal(stepImageZoom(0.8, 1), 1);
+  assert.equal(stepImageZoom(0.8, -1), 0.75);
+  assert.equal(stepImageZoom(Number.NaN, 1), 1.25);
+
+  let zoom = IMAGE_ZOOM_MIN;
+  const visited = [zoom];
+  for (let i = 0; i < IMAGE_ZOOM_LEVELS.length + 3; i += 1) {
+    zoom = stepImageZoom(zoom, 1);
+    visited.push(zoom);
+  }
+  assert.deepEqual(visited, [...IMAGE_ZOOM_LEVELS, IMAGE_ZOOM_MAX, IMAGE_ZOOM_MAX, IMAGE_ZOOM_MAX, IMAGE_ZOOM_MAX]);
+});
+
+test("imageZoomPercent - formats a canvas width and toolbar label", () => {
+  assert.equal(imageZoomPercent(1), "100%");
+  assert.equal(imageZoomPercent(1.25), "125%");
+  assert.equal(imageZoomPercent(0.25), "25%");
+  assert.equal(imageZoomPercent(4), "400%");
+  assert.equal(imageZoomPercent(99), "400%");
+  assert.equal(imageZoomPercent(Number.NaN), "100%");
 });
