@@ -1,8 +1,8 @@
 # Herdr File Editor
 
-A native, dual-mode **File Browser & Editor Tab** mod for Herdr featuring directory tree navigation, Git status porcelain badges, dedicated tabbed file viewing, theme-aware syntax highlighting, and rich Markdown previews powered directly by GPUI.
+A native, dual-mode **File Browser & Editor Tab** mod for Herdr featuring directory tree navigation, Git status porcelain badges, dedicated tabbed file viewing, theme-aware syntax highlighting, and rich Markdown and SVG previews powered directly by GPUI.
 
-Instead of opening raw code files inside the narrow Files panel, `file-editor` opens files into their own dedicated Herdr tabs with full-pane syntax highlighting and Markdown rendering, keeping your directory tree accessible and intact.
+Instead of opening raw code files inside the narrow Files panel, `file-editor` opens files into their own dedicated Herdr tabs with full-pane syntax highlighting and Markdown or SVG rendering, keeping your directory tree accessible and intact.
 
 ---
 
@@ -20,8 +20,17 @@ Instead of opening raw code files inside the narrow Files panel, `file-editor` o
 - **Rendered Markdown Preview**:
   - For `.md`, `.markdown`, and `.mdx` files, defaults to a GitHub-style rendered preview (headings, code, tables, quotes, task lists) inside a centered, readable reading column.
   - Supports switching seamlessly between **Preview** and **Code** modes via a segmented header switcher.
+- **Rendered SVG Preview**:
+  - For `.svg` files, defaults to a rendered preview on a light canvas so `currentColor` icons stay visible on dark themes.
+  - The preview copy is rasterized at a large intrinsic size, keeping small 24×24 icon view boxes crisp when enlarged.
+  - Supports the same **Preview** / **Code** switcher, with full SVG source highlighting in Code view.
+- **Picture Zoom**:
+  - Raster images and SVG previews support zoom controls (`−` / percentage / `+`), a reset-to-fit button, and Cmd/Ctrl + wheel zooming.
+  - 100% fits the picture to the pane; larger levels overflow and scroll in both directions.
 - **Toolbar Craft**:
   - **Header Info**: Bold basename, truncated folder path, line count & language pill, and `Read-only` badge.
+  - **View Switcher**: `Preview` / `Code` for Markdown and SVG files.
+  - **Zoom Controls**: `−` / percentage / `+` for raster images and SVG previews; the percentage resets to fit.
   - **Wrap Toggle**: Toggles soft line wrapping on and off, remembered in shared settings (`file-editor.wrap`).
   - **Copy Button**: Copies file text to the clipboard with an instant toast notification.
   - **Refresh Button**: Reloads file contents directly from disk.
@@ -93,6 +102,20 @@ Force Code view for a Markdown document:
 ```sh
 herdr-app do tab.new --name "CHANGELOG.md" --mod file-editor \
   --props '{"folder":"/path/to/project","file":"CHANGELOG.md","viewMode":"code"}'
+```
+
+Open an SVG in its rendered preview (the default) at 150% zoom:
+
+```sh
+herdr-app do tab.new --name "icon.svg" --mod file-editor \
+  --props '{"folder":"/path/to/project","file":"assets/icon.svg","zoom":1.5}'
+```
+
+Force Code view for an SVG:
+
+```sh
+herdr-app do tab.new --name "icon.svg" --mod file-editor \
+  --props '{"folder":"/path/to/project","file":"assets/icon.svg","viewMode":"code"}'
 ```
 
 ---

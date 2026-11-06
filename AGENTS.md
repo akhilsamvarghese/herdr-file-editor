@@ -1,6 +1,6 @@
 # herdr-file-editor
 
-Source of truth for the `file-editor` Herdr app mod (`mods/file-editor/`): a dual-mode file browser panel and tabbed file editor with syntax highlighting, Markdown preview, and live filesystem watching built natively with GPUI.
+Source of truth for the `file-editor` Herdr app mod (`mods/file-editor/`): a dual-mode file browser panel and tabbed file editor with syntax highlighting, Markdown and SVG previews, picture zoom, and live filesystem watching built natively with GPUI.
 
 ## Rule: Always Update the Herdr Live Folder
 
@@ -29,16 +29,19 @@ The mod operates in two distinct modes based on whether `props().file` is provid
    - **Clicking a file (`!entry.dir`) NEVER opens the file inline or replaces the tree**. It invokes `this.openFileTab(path, cx)` which checks existing non-settled tabs, reuses matching tabs via `tab.select`, or opens a new dedicated Herdr tab with `tab.new`.
 
 2. **File Editor Tab Mode (`props().file` is a non-empty string)**:
-   - Renders a full-size file viewer tab (`#file-editor-tab`) for `{ folder, file, on?, viewMode?, wrap? }`.
+   - Renders a full-size file viewer tab (`#file-editor-tab`) for `{ folder, file, on?, viewMode?, wrap?, zoom? }`.
    - Reads file text via `readTextFile` off the UI thread and watches `root` via `watchFolder` so external edits reload automatically.
    - Header bar (`h(38)`, `bg(t.chrome)`) provides:
      - Basename, truncated parent path, line count, language pill, and `Read-only` badge.
-     - For Markdown files (`.md`, `.markdown`, `.mdx`): segmented `Preview` / `Code` view switcher defaulting to `"preview"`.
+     - For Markdown files (`.md`, `.markdown`, `.mdx`) and SVG files (`.svg`): segmented `Preview` / `Code` view switcher defaulting to `"preview"`.
+     - For raster images and SVG previews: zoom controls (`−`, percentage, `+`), a reset-to-fit percentage button, and Cmd/Ctrl + wheel zooming. Zoom runs from 25% to 400%; 100% fits the picture to the pane and larger levels scroll in both directions.
      - In Code view: `Wrap` toggle button toggling soft wrapping on `EditorState` and persisting to `shared("file-editor.wrap")`.
      - Copy button writing text to clipboard with toast notification.
      - Refresh button reloading from disk.
    - Code rendering uses `EditorState.new` with syntax highlighting from `theme()` and font settings.
    - Markdown rendering is GitHub-style and built in `mods/file-editor/markdown-view.js`: `parseMarkdownBlocks` (file-logic.js) turns the source into blocks, which are drawn as headings with rules, code boxes, bordered tables, quote bars, list and task markers. Inline text (emphasis, code, links) goes through `TextView.markdown`, which takes no styling of its own.
+   - Picture previews use `imageHeaderSize` (raster header parsing) and `prepareSvgPreviewInfo` (SVG root size) to know the picture's aspect ratio. With the pane measured from pointer/wheel bounds, `renderPictureCanvas` sizes it in pixels for an exact fit; before that, a percentage aspect box fits by width using `padding-top` relative to the box width. The preview is top-left aligned when zoomed in, centered at fit, and wrapped in `overflow_scrollbar` for panning; `file-logic.js` owns the level ladder (`IMAGE_ZOOM_LEVELS`, `normalizeImageZoom`, `stepImageZoom`, `imageZoomPercent`).
+   - SVG preview writes an enlarged copy of the source into `cache/file-editor/` and draws it with `image()` on a light canvas. The host rasterizes SVG at the root `width`/`height`, so `prepareSvgPreview` (file-logic.js) scales the intrinsic size up while preserving the `viewBox`; the light canvas keeps `currentColor` icons visible on dark themes. The cache copy is refreshed on reload and removed in `close(_cx)`.
 
 ---
 
@@ -59,7 +62,7 @@ Run the automated test suite and mod validator:
 herdr-app check mods/file-editor && node --test test/
 ```
 
-- `mods/file-editor/file-logic.js`: Pure functions for path splitting, language detection, view mode defaults, file text preparation, Markdown block parsing, syntax theming, location resolution, and tab resolution, file icon choice (`fileIconPath`). Icons in `mods/file-editor/icons/` are full-color SVGs from Material Icon Theme (MIT, license in `icons/LICENSE.txt`), drawn with `image()` so their colors survive; `svg()` would tint them with the text color.
+- `mods/file-editor/file-logic.js`: Pure functions for path splitting, language detection, view mode defaults, file text preparation, SVG preview preparation (`prepareSvgPreview`, `prepareSvgPreviewInfo`), raster image dimensions (`imageHeaderSize`), picture zoom levels (`normalizeImageZoom`, `stepImageZoom`, `imageZoomPercent`), Markdown block parsing, syntax theming, location resolution, tab resolution, and file icon choice (`fileIconPath`). Icons in `mods/file-editor/icons/` are full-color SVGs from Material Icon Theme (MIT, license in `icons/LICENSE.txt`), drawn with `image()` so their colors survive; `svg()` would tint them with the text color.
 - `test/file-logic.test.js`: Unit tests verifying contract, edge cases, and boundaries with `node:test` and `node:assert/strict`.
 
 ---
