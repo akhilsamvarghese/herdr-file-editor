@@ -672,7 +672,25 @@ export default class FileEditor extends View {
           .border_b(1)
           .border_color(t.border)
           .child(image(fileIconPath(base, isLightColor(t.background))).size(14).flex_none())
-          .child(div().font_semibold().text_size(12.5).truncate().child(base))
+          .child(div().min_w(0).font_semibold().text_size(12.5).truncate().child(base))
+          .when(!this.isImage, (e) =>
+            e.child(
+              h_flex()
+                .id("file-editor-copy")
+                .flex_none()
+                .p(4)
+                .rounded(4)
+                .cursor_pointer()
+                .hover((s) => s.bg(t.hover))
+                .text_color(t.muted)
+                .tooltip("Copy file content")
+                .on_click((_e, cx) => {
+                  cx.write_to_clipboard(this.rawText ?? "");
+                  notify({ title: "File copied", body: base, level: "success", timeout: 1500 });
+                })
+                .child(svg("mods/file-editor/copy.svg").size(12))
+            )
+          )
           .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(dir))
           .child(
             div()
@@ -758,24 +776,6 @@ export default class FileEditor extends View {
                 )
                 .on_click((_e, cx) => this.setWrap(!this.wrap, cx))
                 .child("Wrap")
-            )
-          )
-          .when(!this.isImage, (e) =>
-            e.child(
-              h_flex()
-                .id("file-editor-copy")
-                .flex_none()
-                .p(4)
-                .rounded(4)
-                .cursor_pointer()
-                .hover((s) => s.bg(t.hover))
-                .text_color(t.muted)
-                .tooltip("Copy file content")
-                .on_click((_e, cx) => {
-                  cx.write_to_clipboard(this.rawText ?? "");
-                  notify({ title: "File copied", body: base, level: "success", timeout: 1500 });
-                })
-                .child(svg("mods/file-editor/copy.svg").size(12))
             )
           )
           .child(
@@ -1130,6 +1130,9 @@ export default class FileEditor extends View {
     this.marks = {};
     this.selectedFile = null;
     this.hoveredPath = null;
+    this.contextMenu = null;
+    this.filesOrigin = null;
+    this.filesBounds = null;
     this.loading = false;
     this.refreshPending = false;
     this.watched = null;
@@ -1270,6 +1273,7 @@ export default class FileEditor extends View {
       this.marks = {};
       this.selectedFile = saved?.selectedFile ?? null;
       this.hoveredPath = null;
+      this.contextMenu = null;
       this.watched = null;
       this.watchToken = null;
       this.error = null;
@@ -1422,6 +1426,96 @@ export default class FileEditor extends View {
   }
 
   /**
+   * Opens the right-click menu for a file tree row at the pointer position.
+   *
+   * @param {{ name: string, dir: boolean }} entry
+   * @param {string} path
+   * @param {import("gpui-kit").MouseButtonEvent} event
+   * @param {import("gpui-kit").ViewContext} cx
+   */
+  openRowContextMenu(entry, path, event, cx) {
+    const menuWidth = 180;
+    const menuHeight = entry.dir ? 34 : 60;
+    const origin = this.filesOrigin;
+    const bounds = this.filesBounds;
+    const paneX = origin?.x ?? bounds?.x ?? 0;
+    const paneY = origin?.y ?? bounds?.y ?? 0;
+    let x = typeof event?.position?.x === "number" ? event.position.x - paneX : 20;
+    let y = typeof event?.position?.y === "number" ? event.position.y - paneY : 20;
+    const maxW = bounds?.width ?? 0;
+    const maxH = bounds?.height ?? 0;
+    if (maxW && x + menuWidth > maxW) x = Math.max(8, maxW - menuWidth - 8);
+    if (maxH && y + menuHeight > maxH) y = Math.max(8, maxH - menuHeight - 8);
+    this.contextMenu = { path, dir: entry.dir, x, y };
+    cx.notify();
+  }
+
+  /**
+   * Closes the file tree right-click menu.
+   *
+   * @param {import("gpui-kit").ViewContext} cx
+   */
+  closeRowContextMenu(cx) {
+    if (!this.contextMenu) return;
+    this.contextMenu = null;
+    cx.notify();
+  }
+
+  /**
+   * Renders the file tree right-click menu over the pane.
+   *
+   * @param {Record<string, string>} t
+   * @returns {import("gpui-kit").Element | null}
+   */
+  renderRowContextMenu(t) {
+    const menu = this.contextMenu;
+    if (!menu) return null;
+
+    const item = (id, label, action) =>
+      h_flex()
+        .id(id)
+        .h(26)
+        .px(8)
+        .rounded(5)
+        .cursor_pointer()
+        .hover((s) => s.bg(t.hover))
+        .on_click((_e, cx) => {
+          this.contextMenu = null;
+          action(cx);
+          cx.notify();
+        })
+        .child(div().truncate().child(label));
+
+    return div()
+      .id("files-context-backdrop")
+      .absolute()
+      .inset_0()
+      .on_mouse_down("left", (_e, cx) => this.closeRowContextMenu(cx))
+      .on_mouse_down("right", (_e, cx) => this.closeRowContextMenu(cx))
+      .child(
+        v_flex()
+          .id("files-context-menu")
+          .absolute()
+          .left(menu.x)
+          .top(menu.y)
+          .w(180)
+          .p(4)
+          .rounded(8)
+          .bg(t.popover)
+          .border_1()
+          .border_color(t.border)
+          .shadow_lg()
+          .text_size(12)
+          .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+          .on_mouse_down("right", (_e, cx) => cx.stop_propagation())
+          .when(!menu.dir, (el) =>
+            el.child(item("files-menu-open", "Open file", (cx) => this.openFileTab(menu.path, cx)))
+          )
+          .child(item("files-menu-copy", "Copy path", (cx) => this.copyPathToClipboard(menu.path, menu.dir, cx)))
+      );
+  }
+
+  /**
    * Builds rows of the files tree.
    *
    * @param {string} prefix
@@ -1451,6 +1545,8 @@ export default class FileEditor extends View {
           .items_center()
           .rounded(7)
           .cursor_pointer()
+          .cursor_context_menu()
+          .on_mouse_down("right", (event, cx) => this.openRowContextMenu(entry, path, event, cx))
           .when(isSelected, (el) => el.bg(t.selected))
           .hover((s) => s.bg(isSelected ? t.selected : t.hover))
           .on_hover((hovered, cx) => {
@@ -1468,31 +1564,38 @@ export default class FileEditor extends View {
               : div().w(12).flex_none()
           )
           .child(image(entry.dir ? FOLDER_ICON_PATH : fileIconPath(entry.name, isLightColor(t.background))).size(14).flex_none())
-          .child(div().flex_1().min_w(0).truncate().child(entry.name))
+          .child(
+            h_flex()
+              .min_w(0)
+              .gap(6)
+              .items_center()
+              .child(div().min_w(0).truncate().child(entry.name))
+              .when(isHovered, (el) =>
+                el.child(
+                  h_flex()
+                    .id(`file-copy-${path}`)
+                    .flex_none()
+                    .p(3)
+                    .rounded(4)
+                    .cursor_pointer()
+                    .hover((s) => s.bg(isSelected ? t.hover : t.selected))
+                    .text_color(t.muted)
+                    .tooltip(entry.dir ? "Copy folder path" : "Copy file path")
+                    .on_click((_e, cx) => {
+                      cx.stop_propagation();
+                      this.copyPathToClipboard(path, entry.dir, cx);
+                    })
+                    .child(svg("mods/file-editor/copy.svg").size(12))
+                )
+              )
+          )
+          .child(div().flex_1())
           .when(Boolean(mark), (el) =>
             el.child(
               div()
                 .text_size(11)
                 .text_color(mark === "A" ? t.ansi2 : mark === "D" || mark === "U" ? t.ansi1 : t.blocked)
                 .child(mark)
-            )
-          )
-          .when(isHovered, (el) =>
-            el.child(
-              h_flex()
-                .id(`file-copy-${path}`)
-                .flex_none()
-                .p(3)
-                .rounded(4)
-                .cursor_pointer()
-                .hover((s) => s.bg(isSelected ? t.hover : t.selected))
-                .text_color(t.muted)
-                .tooltip(entry.dir ? "Copy folder path" : "Copy file path")
-                .on_click((_e, cx) => {
-                  cx.stop_propagation();
-                  this.copyPathToClipboard(path, entry.dir, cx);
-                })
-                .child(svg("mods/file-editor/copy.svg").size(12))
             )
           )
       );
@@ -1502,8 +1605,7 @@ export default class FileEditor extends View {
   }
 
   /**
-   * Renders the Files pane browser tree.
-   * Kept pure without inline side-effects.
+   * Renders the Files pane browser tree and its right-click menu overlay.
    *
    * @param {import("gpui-kit").ViewContext} _cx
    * @returns {import("gpui-kit").Element}
@@ -1513,6 +1615,7 @@ export default class FileEditor extends View {
 
     return v_flex()
       .id("files")
+      .relative()
       .size_full()
       .min_h(0)
       .rounded(10)
@@ -1522,6 +1625,12 @@ export default class FileEditor extends View {
       .border_color(t.border)
       .text_color(t.foreground)
       .text_size(13)
+      .on_mouse_move((e, _cx) => {
+        if (e.bounds) this.filesBounds = e.bounds;
+        if (e.position && e.local_position) {
+          this.filesOrigin = { x: e.position.x - e.local_position.x, y: e.position.y - e.local_position.y };
+        }
+      })
       .child(
         h_flex()
           .h(42)
@@ -1563,7 +1672,8 @@ export default class FileEditor extends View {
           .when(this.limited, (el) =>
             el.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total"))
           )
-      );
+      )
+      .when(Boolean(this.contextMenu), (el) => el.child(this.renderRowContextMenu(t)));
   }
 
   /**
