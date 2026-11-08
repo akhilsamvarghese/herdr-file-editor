@@ -202,6 +202,10 @@ export default class FileEditor extends View {
     this.editorInputs = null;
     this.watched = null;
     this.watchToken = null;
+    // ponytail: closing a tab with unsaved edits discards them silently (Herdr
+    // has no close-confirmation hook); add one if that bites.
+    this.dirty = false;
+    this.saving = false;
 
     // Register this open tab in shared state
     this.registerOpenTab(p);
@@ -318,6 +322,7 @@ export default class FileEditor extends View {
         this.lineCount = lineCount;
         this.isBinary = isBinary;
         this.isTruncated = isTruncated;
+        this.dirty = false;
 
         if (this.isSvg) this.loadImage(cx);
 
@@ -385,19 +390,27 @@ export default class FileEditor extends View {
       return;
     }
 
+    // Preserve an in-progress edit across a cosmetic rebuild (theme, font, wrap).
+    const liveText = this.dirty && this.code ? this.code.value() : this.preparedText;
     this.code?.release();
     this.code = null;
 
     this.code = EditorState.new({
       language,
-      value: this.preparedText,
-      readonly: true,
+      value: liveText,
+      readonly: this.isTruncated,
       line_numbers: true,
       folding: true,
       soft_wrap: this.wrap,
       font_family: appSettings.font_family,
       font_size: 13,
       syntax,
+    });
+    this.code.on("change", (_event, cx) => {
+      if (!this.dirty) {
+        this.dirty = true;
+        cx.notify();
+      }
     });
     this.editorInputs = {
       file: this.file,
@@ -406,6 +419,39 @@ export default class FileEditor extends View {
       font: appSettings.font_family,
       syntax: JSON.stringify(syntax),
     };
+  }
+
+  /**
+   * Writes the editor's current text to disk. Rejects (and notifies) if the
+   * file changed on disk since this tab last read it, rather than clobbering it.
+   *
+   * @param {import("gpui-kit").ViewContext} cx
+   */
+  saveFile(cx) {
+    if (!this.code || this.isTruncated || this.saving) return;
+    const { base } = splitPathInfo(this.file);
+    const fullPath = this.root ? `${this.root}/${this.file}` : this.file;
+    const text = this.code.value();
+    this.saving = true;
+    cx.notify();
+    cx.spawn(async (cx) => {
+      try {
+        await writeTextFile(fullPath, text, this.rawText);
+        this.rawText = text;
+        this.dirty = false;
+        notify({ title: "Saved", body: base, level: "success", timeout: 1200 });
+      } catch {
+        notify({
+          title: "Save failed",
+          body: `${base} changed on disk — reload before saving`,
+          level: "error",
+          timeout: 3000,
+        });
+      } finally {
+        this.saving = false;
+        cx.notify();
+      }
+    });
   }
 
   /**
@@ -620,7 +666,7 @@ export default class FileEditor extends View {
         while (this.watchToken === token && !this.closed) {
           const changed = await watchFolder(root);
           if (this.watchToken === token && !this.closed) {
-            if (shouldReloadWatchedFile(changed, root, this.file)) {
+            if (shouldReloadWatchedFile(changed, root, this.file) && !this.dirty) {
               this.loadFile(cx);
             }
           }
@@ -661,6 +707,9 @@ export default class FileEditor extends View {
       .text_size(13)
       .on_mouse_move((event, cx) => this.rememberViewport(event?.bounds, cx))
       .on_mouse_down("left", (event, cx) => this.rememberViewport(event?.bounds, cx))
+      .on_key_down((event, cx) => {
+        if (event.keystroke === "cmd-s") this.saveFile(cx);
+      })
       .child(
         h_flex()
           .h(HEADER_HEIGHT)
@@ -703,16 +752,37 @@ export default class FileEditor extends View {
               .text_color(t.muted)
               .child(lineLabel)
           )
-          .child(
-            div()
-              .flex_none()
-              .px(6)
-              .py(1)
-              .rounded(4)
-              .bg(t.raised)
-              .text_size(10)
-              .text_color(t.dim)
-              .child("Read-only")
+          .when(this.isImage || this.isTruncated, (e) =>
+            e.child(
+              div()
+                .flex_none()
+                .px(6)
+                .py(1)
+                .rounded(4)
+                .bg(t.raised)
+                .text_size(10)
+                .text_color(t.dim)
+                .child("Read-only")
+            )
+          )
+          .when(!this.isImage && !this.isTruncated, (e) =>
+            e.child(
+              div()
+                .id("file-editor-save")
+                .flex_none()
+                .px(6)
+                .py(1)
+                .rounded(4)
+                .bg(this.dirty ? t.working : t.raised)
+                .text_size(10)
+                .text_color(this.dirty ? t.foreground : t.dim)
+                .when(this.dirty, (b) => b.cursor_pointer().hover((s) => s.bg(t.working)))
+                .tooltip(this.dirty ? "Cmd/Ctrl+S to save" : "Saved")
+                .on_click((_e, cx) => {
+                  if (this.dirty) this.saveFile(cx);
+                })
+                .child(this.saving ? "Saving…" : this.dirty ? "Modified" : "Saved")
+            )
           )
           .when(hasPreview, (e) =>
             e.child(
