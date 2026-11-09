@@ -31,16 +31,16 @@ The mod operates in two distinct modes based on whether `props().file` is provid
    - Right-clicking a row opens `#files-context-menu` at the pointer with `Open file` (files only, through `openFileTab`) and `Copy path`. The pane root records `filesOrigin`/`filesBounds` on mouse move so the menu is clamped inside the panel, and the `#files-context-backdrop` overlay closes it on any outside press.
 
 2. **File Editor Tab Mode (`props().file` is a non-empty string)**:
-   - Renders a full-size file viewer tab (`#file-editor-tab`) for `{ folder, file, on?, viewMode?, wrap?, zoom? }`.
-   - Reads file text via `readTextFile` off the UI thread and watches `root` via `watchFolder` so external edits reload automatically.
+   - Renders a full-size file editor tab (`#file-editor-tab`) for `{ folder, file, on?, viewMode?, wrap?, zoom? }`.
+   - Reads file text via `readTextFile` off the UI thread and watches `root` via `watchFolder` so external edits reload automatically without clobbering unsaved dirty changes.
    - Header bar (`h(38)`, `bg(t.chrome)`) provides:
-     - Basename, truncated parent path, line count, language pill, and `Read-only` badge.
-     - For Markdown files (`.md`, `.markdown`, `.mdx`) and SVG files (`.svg`): segmented `Preview` / `Code` view switcher defaulting to `"preview"`.
+     - Basename with an accent dot indicator (`●`) when unsaved edits are present, truncated parent path, line count, language pill, and either a dynamic `Save` button (accent-highlighted when dirty, supporting Cmd/Ctrl+S) or a `Read-only` badge (for binary, image, or truncated files).
+     - For Markdown files (`.md`, `.markdown`, `.mdx`) and SVG files (`.svg`): segmented `Preview` / `Code` view switcher defaulting to `"preview"`. In Code view, full text editing and saving are supported.
      - For raster images and SVG previews: zoom controls (`−`, percentage, `+`), a reset-to-fit percentage button, and Cmd/Ctrl + wheel zooming. Zoom runs from 25% to 400%; 100% fits the picture to the pane and larger levels scroll in both directions.
-     - In Code view: `Wrap` toggle button toggling soft wrapping on `EditorState` and persisting to `shared("file-editor.wrap")`.
-     - Copy button next to the file name writing text to the clipboard with a toast notification.
-     - Refresh button reloading from disk.
-   - Code rendering uses `EditorState.new` with syntax highlighting from `theme()` and font settings.
+     - In Code view: `Wrap` toggle button (and `Alt+Z` / `Opt+Z` keyboard shortcut) toggling soft wrapping on `EditorState` and persisting to `shared("file-editor.wrap")`.
+     - Copy button next to the file name writing current text to the clipboard with a toast notification.
+     - Refresh button reloading from disk and discarding uncommitted edits; automatic background watcher (`watchFolder`) and 1.5s disk change poller update files live when modified by agents, git, or external processes without clobbering dirty edits.
+   - Code editing and rendering uses `EditorState.new` with syntax highlighting from `theme()` and font settings. Listens to `change` events for real-time dirty tracking and Cmd/Ctrl+S saving via `writeTextFile` (locally) or `writeRemoteTextFile` (remotely over SSH via `herdr-core` `exec`).
    - Markdown rendering is GitHub-style and built in `mods/file-editor/markdown-view.js`: `parseMarkdownBlocks` (file-logic.js) turns the source into blocks, which are drawn as headings with rules, code boxes, bordered tables, quote bars, list and task markers. Inline text (emphasis, code, links) goes through `TextView.markdown`, which takes no styling of its own.
    - Picture previews use `imageHeaderSize` (raster header parsing) and `prepareSvgPreviewInfo` (SVG root size) to know the picture's aspect ratio. With the pane measured from pointer/wheel bounds, `renderPictureCanvas` sizes it in pixels for an exact fit; before that, a percentage aspect box fits by width using `padding-top` relative to the box width. The preview is top-left aligned when zoomed in, centered at fit, and wrapped in `overflow_scrollbar` for panning; `file-logic.js` owns the level ladder (`IMAGE_ZOOM_LEVELS`, `normalizeImageZoom`, `stepImageZoom`, `imageZoomPercent`).
    - SVG preview writes an enlarged copy of the source into `cache/file-editor/` and draws it with `image()` on a light canvas. The host rasterizes SVG at the root `width`/`height`, so `prepareSvgPreview` (file-logic.js) scales the intrinsic size up while preserving the `viewBox`; the light canvas keeps `currentColor` icons visible on dark themes. The cache copy is refreshed on reload and removed in `close(_cx)`.

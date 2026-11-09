@@ -12,14 +12,15 @@ Inside any Herdr sidebar, split pane, or dedicated tab:
   - **Header**: Clean panel header displaying "Files" and the current workspace folder name.
   - **Directory Tree (`#files-tree`)**: Collapsible folder hierarchy with vector chevrons (`chevron-down.svg`, `chevron-right.svg`), folder icons (`folder.svg`), file icons (`file.svg`), Git status porcelain marks (`A` in green, `M` in yellow/blocked, `D`/`U` in red), selection highlighting when a file's tab is active, a hover copy-path button beside the name, and a right-click menu (`Open file`, `Copy path`).
 - **Dedicated File Editor Tab (`#file-editor-tab`)**:
-  - **Toolbar (`h(38)`)**: Matches Herdr diff tab craft with vector file icon, bold filename, truncated directory path, metadata pill showing line count and language name (e.g., `142 lines · JavaScript` or `85 lines · Markdown`), and a subtle `Read-only` badge.
+  - **Toolbar (`h(38)`)**: Matches Herdr diff tab craft with vector file icon, bold filename with an accent dot indicator (`●`) on unsaved edits, truncated directory path, metadata pill showing line count and language name (e.g., `142 lines · JavaScript` or `85 lines · Markdown`), dynamic `Save` button (or `Read-only` badge on protected files), and copy/refresh buttons.
+  - **Editing & Saving**: Full editing support in Code view for code, config, Markdown, and SVG files with live dirty state tracking, `Save` button, and `Cmd+S` / `Ctrl+S` saving.
   - **Markdown Mode Switcher**: For `.md`, `.markdown`, and `.mdx` files, a segmented toggle (`Preview` / `Code`) defaulting to rendered preview.
   - **SVG Mode Switcher**: For `.svg` files, the same `Preview` / `Code` toggle, defaulting to a rendered preview on a light canvas so `currentColor` icons stay visible on dark themes.
   - **Zoom Controls**: Raster images and SVG previews show `−` / percentage / `+` controls beside the view switcher; the percentage resets to fit. Cmd/Ctrl + wheel also zooms.
   - **Wrap Toggle**: In Code view, a `Wrap` button toggling soft line wrapping on long lines.
   - **Copy Button**: One-click clipboard copy button (`copy.svg`) with an instant toast notification.
   - **Refresh Button**: One-click reload button (`refresh.svg`) that re-reads file content from disk.
-  - **Code View**: Full-pane read-only editor with line numbers, code folding, theme-matched syntax highlighting, and user font settings.
+  - **Code View**: Interactive editor with line numbers, code folding, theme-matched syntax highlighting, user font settings, and in-place editing.
   - **Markdown Preview**: GitHub-style rendering (headings with rules, code boxes, bordered tables, quote bars, task lists) in a centered, readable 880px max-width column.
   - **SVG Preview**: `prepareSvgPreview` writes an enlarged copy to `cache/file-editor/` so the host rasterizes small icon view boxes crisply, and the preview is drawn on a light canvas so black `currentColor` fallbacks remain visible.
   - **Edge State Banners**: Friendly centered messages for deleted/missing files (`"This file is no longer available"`), binary files (`"Binary file · no text preview"`), or files truncated past 400,000 characters.
@@ -39,7 +40,9 @@ Inside any Herdr sidebar, split pane, or dedicated tab:
   - Reads file text asynchronously off the UI thread with `readTextFile`.
   - Automatically detects language and syntax coloring tokens from Herdr's active theme.
   - Defaults Markdown and SVG files to `"preview"` mode and all other files to `"code"` mode.
-  - Watches the workspace directory via `watchFolder` so external edits or saves reload the open tab automatically.
+  - Allows full editing in Code view, updating line counts dynamically and tracking dirty state against the disk snapshot.
+  - Saves file contents atomically (via `writeTextFile` locally or `writeRemoteTextFile` over SSH via `herdr-core` `exec`), triggered by the toolbar `Save` button or `Cmd+S` / `Ctrl+S`, alerting if disk files were modified externally.
+  - Watches the workspace directory via `watchFolder` so external edits reload automatically without clobbering active unsaved work.
   - Persists line wrap preferences in `shared("file-editor.wrap")`.
   - Zooms raster images and SVG previews at 25%–400%; 100% fits the pane and higher levels scroll in both directions.
   - Releasing or closing tabs cleanly frees `EditorState` instances, invalidates watch tokens, and deletes cached preview copies.

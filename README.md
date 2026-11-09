@@ -14,6 +14,12 @@ Instead of opening raw code files inside the narrow Files panel, `file-editor` o
 - **Tab Deduplication & Disambiguation**:
   - Clicking a file reuses an existing open tab for that file instead of creating duplicate tabs.
   - Automatically disambiguates files with identical names from different directories (`dir/base`).
+- **Interactive File Editing & Saving**:
+  - Full-featured in-place editing for code, configuration, Markdown, and SVG files in Code view.
+  - Real-time dirty state tracking with an accent unsaved-changes indicator (`●`) beside the filename and updated line counts as you type.
+  - Dedicated `Save` button in the header toolbar (highlighted when dirty) and `Cmd+S` / `Ctrl+S` keyboard shortcuts.
+  - Atomic snapshot saving with `writeTextFile` locally and chunked atomic writes over SSH via `herdr-core` `exec` to prevent overwriting external disk edits, alerting on conflicts via toast.
+  - Watcher safety: background directory watching never clobbers active unsaved edits.
 - **Syntax Highlighting & Code View**:
   - Powered by `EditorState` and `Editor` with line numbers, code folding, font family/size configuration, and colors derived dynamically from your active Herdr `theme()`.
   - Supports JavaScript, TypeScript, JSX/TSX, Python, Rust, Go, C/C++, Shell, HTML, CSS, JSON, YAML, TOML, Dockerfile, Makefile, and more.
@@ -28,14 +34,14 @@ Instead of opening raw code files inside the narrow Files panel, `file-editor` o
   - Raster images and SVG previews support zoom controls (`−` / percentage / `+`), a reset-to-fit button, and Cmd/Ctrl + wheel zooming.
   - 100% fits the picture to the pane; larger levels overflow and scroll in both directions.
 - **Toolbar Craft**:
-  - **Header Info**: Bold basename, truncated folder path, line count & language pill, and `Read-only` badge.
+  - **Header Info**: Bold basename with unsaved dot (`●`), truncated folder path, line count & language pill, dynamic `Save` button, or `Read-only` badge with tooltip explanation.
   - **View Switcher**: `Preview` / `Code` for Markdown and SVG files.
   - **Zoom Controls**: `−` / percentage / `+` for raster images and SVG previews; the percentage resets to fit.
-  - **Wrap Toggle**: Toggles soft line wrapping on and off, remembered in shared settings (`file-editor.wrap`).
+  - **Wrap Toggle**: Toggles soft line wrapping on and off (via toolbar button or `Alt+Z` / `Opt+Z`), remembered in shared settings (`file-editor.wrap`).
   - **Copy Button**: Copies file text to the clipboard with an instant toast notification.
   - **Refresh Button**: Reloads file contents directly from disk.
-- **Live Disk Watching**:
-  - Integrates with `watchFolder` off the UI thread so external modifications or saves immediately reload the open tab.
+- **Live Disk Watching & Polling**:
+  - Integrates with `watchFolder` off the UI thread and a 1.5s disk change poll so external modifications by agents or tools automatically update the open tab without clobbering unsaved edits.
 - **Edge Case & Safety Protections**:
   - Friendly warnings for deleted or missing files (`"This file is no longer available"`).
   - Binary file detection (`"Binary file · no text preview"`).
