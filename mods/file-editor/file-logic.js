@@ -469,15 +469,23 @@ export function shouldReloadWatchedFile(changedPaths, root, file) {
 
   for (const p of changedPaths) {
     if (typeof p !== "string") continue;
-    const normP = p.replace(/\\/g, "/").replace(/\/+$/, "");
+    let normP = p.replace(/\\/g, "/").replace(/\/+$/, "");
+    if (normP.startsWith("./")) normP = normP.slice(2);
+
     // Batch overflow or root change:
-    if (normP === normRoot) return true;
-    // Exact file match:
-    if (normP === normFull) return true;
+    if (normP === normRoot || (normRoot && normRoot.startsWith(normP + "/"))) return true;
+    // Exact file match (full or relative):
+    if (normP === normFull || normP === normFile) return true;
+    // Suffix match (e.g. symlinked, container or realpath prefixes):
+    if (normFile && normP.endsWith("/" + normFile)) return true;
     // Parent directory of the file was modified:
-    if (normFull.startsWith(normP + "/")) return true;
+    if (normFull && normFull.startsWith(normP + "/")) return true;
+    if (normFile && normFile.startsWith(normP + "/")) return true;
     // Changed path is inside the file:
     if (normP.startsWith(normFull + "/")) return true;
+    // Atomic/temp file write for this file (e.g. main.js.tmp.123 or main.js~):
+    if (normP.startsWith(normFull + ".") || normP.startsWith(normFull + "~")) return true;
+    if (normP.startsWith(normFile + ".") || normP.startsWith(normFile + "~")) return true;
   }
   return false;
 }

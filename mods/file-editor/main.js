@@ -270,6 +270,8 @@ export default class FileEditor extends View {
 
     // Sync theme, font, and shared wrap setting periodically
     cx.timer.every(500, (cx) => this.syncTabConfig(cx));
+    // Poll for external file modifications as a safety net (e.g. agent edits, remote SSH, missed watcher events)
+    cx.timer.every(1500, (cx) => this.checkDiskChanges(cx));
   }
 
   /**
@@ -866,9 +868,24 @@ export default class FileEditor extends View {
     cx.spawn(async (cx) => {
       try {
         while (this.watchToken === token && !this.closed) {
-          const changed = await watchFolder(root);
+          let changed;
+          try {
+            changed = await watchFolder(root);
+          } catch {
+            await new Promise((r) => setTimeout(r, 1000));
+            continue;
+          }
           if (this.watchToken === token && !this.closed) {
             if (shouldReloadWatchedFile(changed, root, this.file)) {
+              if (this.dirty) {
+                // Do not clobber active unsaved edits with background disk reload
+                continue;
+              }
+              if (this.code && this.lastSavedText !== null && this.code.value() === this.lastSavedText) {
+                // Disk event was triggered by our own save; ignore to keep editor cursor intact
+                this.lastSavedText = null;
+                continue;
+              }
               this.loadFile(cx);
             }
           }
@@ -878,6 +895,39 @@ export default class FileEditor extends View {
           this.watched = null;
           this.watchToken = null;
         }
+      }
+    });
+  }
+
+  /**
+   * Periodically checks if the open file has changed on disk.
+   * Reloads content when modified externally and no local unsaved edits are present.
+   * Works across SSH remote machines, Docker containers, and missed watcher events.
+   *
+   * @param {import("gpui-kit").ViewContext} cx
+   */
+  checkDiskChanges(cx) {
+    if (this.closed || this.loading || this.saving || this.dirty || !this.file) return;
+
+    const root = this.root;
+    const file = this.file;
+    const on = this.on;
+    const fullPath = root ? `${root}/${file}` : file;
+
+    cx.spawn(async (cx) => {
+      if (this.closed || this.loading || this.saving || this.dirty) return;
+      try {
+        const text = await readTextFile(fullPath, { on });
+        if (this.closed || this.loading || this.saving || this.dirty) return;
+        if (typeof text !== "string") return;
+
+        // If content on disk matches what we already have, do nothing
+        if (text === this.rawText) return;
+
+        // File was updated externally! Reload the file so latest changes appear immediately
+        this.loadFile(cx);
+      } catch {
+        // Silently ignore transient read errors during background polling
       }
     });
   }

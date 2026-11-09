@@ -421,6 +421,20 @@ test("shouldReloadWatchedFile - filters batch change events accurately", () => {
 
   // Multiple changes with one relevant
   assert.equal(shouldReloadWatchedFile([`${root}/package.json`, `${root}/${file}`], root, file), true);
+
+  // Relative path match
+  assert.equal(shouldReloadWatchedFile(["src/main.js"], root, file), true);
+  assert.equal(shouldReloadWatchedFile(["./src/main.js"], root, file), true);
+
+  // Relative directory match
+  assert.equal(shouldReloadWatchedFile(["src"], root, file), true);
+
+  // Atomic/temp file write
+  assert.equal(shouldReloadWatchedFile([`${root}/src/main.js.tmp.123`], root, file), true);
+  assert.equal(shouldReloadWatchedFile(["src/main.js~"], root, file), true);
+
+  // Suffix/symlinked path match
+  assert.equal(shouldReloadWatchedFile([`/private${root}/${file}`], root, file), true);
 });
 
 test("buildSyntaxTheme - maps ANSI colors correctly with fallbacks", () => {
