@@ -43,6 +43,11 @@ import {
   prepareSvgPreviewInfo,
   defaultViewMode,
   prepareFileText,
+  countLines,
+  isContentDirty,
+  encodeBase64Chunks,
+  isFileReadonly,
+  readonlyReason,
   shouldReloadWatchedFile,
   buildSyntaxTheme,
   resolveLocationState,
@@ -116,6 +121,52 @@ async function directory(path, on) {
   return out;
 }
 
+/**
+ * Writes UTF-8 text to a file on a remote machine over SSH via herdr-core exec.
+ * Uses base64 chunking to respect MAX_ARG_STRLEN on remote kernels, and writes
+ * through a temporary file for atomic updates.
+ *
+ * @param {string} fullPath - Absolute destination path on the remote machine.
+ * @param {string} text - Text to write.
+ * @param {string} on - Remote machine identifier.
+ * @param {string | null} expected - Expected existing file content snapshot.
+ * @returns {Promise<void>}
+ */
+async function writeRemoteTextFile(fullPath, text, on, expected) {
+  if (expected !== null && expected !== undefined) {
+    const current = await readTextFile(fullPath, { on });
+    if (current !== null && current !== expected) {
+      throw new Error("File was modified externally on disk (stale snapshot)");
+    }
+  }
+
+  const chunks = encodeBase64Chunks(text);
+  const unixScript =
+    'target="$1"; dir=$(dirname "$target"); mkdir -p "$dir" && tmp="$target.tmp.$$" && shift && (for c in "$@"; do printf "%s" "$c"; done | (base64 -d 2>/dev/null || base64 -D) > "$tmp") && mv -f "$tmp" "$target"';
+
+  try {
+    const r = await exec("sh", ["-c", unixScript, "write", fullPath, ...chunks], { on });
+    if (r.code !== 0) {
+      throw new Error(r.stderr || `Failed to write file on remote machine (${r.code})`);
+    }
+  } catch (err) {
+    if (String(err).includes("cannot start sh: program not found")) {
+      const psScript =
+        '$target = $args[0]; $dir = [System.IO.Path]::GetDirectoryName($target); if ($dir -and -not [System.IO.Directory]::Exists($dir)) { [System.IO.Directory]::CreateDirectory($dir) | Out-Null }; $chunks = $args[1..($args.Length - 1)]; $b64 = [string]::Join("", $chunks); $bytes = [System.Convert]::FromBase64String($b64); [System.IO.File]::WriteAllBytes($target, $bytes)';
+      const psRes = await exec(
+        "powershell",
+        ["-NoProfile", "-Command", psScript, fullPath, ...chunks],
+        { on }
+      );
+      if (psRes.code !== 0) {
+        throw new Error(psRes.stderr || `Failed to write file on remote machine (${psRes.code})`);
+      }
+      return;
+    }
+    throw err;
+  }
+}
+
 export default class FileEditor extends View {
   /**
    * Initializes the view based on whether props().file is provided.
@@ -154,6 +205,10 @@ export default class FileEditor extends View {
     this.editorInputs = null;
     this.imageSize = null;
     this.pictureViewport = null;
+    this.focusHandle = null;
+    this.dirty = false;
+    this.saving = false;
+    this.lastSavedText = null;
     if (this.code) {
       this.code.release();
       this.code = null;
@@ -202,6 +257,10 @@ export default class FileEditor extends View {
     this.editorInputs = null;
     this.watched = null;
     this.watchToken = null;
+    this.focusHandle = cx.focus_handle();
+    this.dirty = false;
+    this.saving = false;
+    this.lastSavedText = null;
 
     // Register this open tab in shared state
     this.registerOpenTab(p);
@@ -312,19 +371,30 @@ export default class FileEditor extends View {
         if (this.closed) return;
         const { error, text: preparedText, lineCount, isBinary, isTruncated } = prepareFileText(text);
 
+        const hadUnsavedEdits = this.dirty;
         this.rawText = isBinary ? null : text;
         this.preparedText = preparedText;
         this.fileError = error;
         this.lineCount = lineCount;
         this.isBinary = isBinary;
         this.isTruncated = isTruncated;
+        if (!hadUnsavedEdits) {
+          this.dirty = false;
+        }
 
         if (this.isSvg) this.loadImage(cx);
 
         if (this.preparedText !== null && !this.isBinary) {
           const hasPreview = isMarkdownFile(this.file) || this.isSvg;
           if (!hasPreview || this.viewMode === "code") {
-            this.rebuildEditor();
+            if (this.code && this.code.value() === this.preparedText) {
+              // Current editor already has the latest text; do not rebuild to preserve cursor and focus.
+            } else if (this.code && !hadUnsavedEdits) {
+              // External disk change while not dirty: update buffer in place without recreating EditorState.
+              this.code.set_value(this.preparedText);
+            } else if (!this.code) {
+              this.rebuildEditor();
+            }
           } else {
             this.code?.release();
             this.code = null;
@@ -342,6 +412,7 @@ export default class FileEditor extends View {
         this.lineCount = 0;
         this.isBinary = false;
         this.isTruncated = false;
+        this.dirty = false;
         this.code?.release();
         this.code = null;
         this.editorInputs = null;
@@ -357,10 +428,42 @@ export default class FileEditor extends View {
   }
 
   /**
+   * Returns whether the active tab is in read-only mode.
+   *
+   * @returns {boolean}
+   */
+  isReadonly() {
+    return isFileReadonly({
+      isBinary: this.isBinary,
+      isImage: this.isImage,
+      isTruncated: this.isTruncated,
+      on: this.on,
+      fileError: this.fileError,
+    });
+  }
+
+  /**
+   * Explains why the active tab is in read-only mode.
+   *
+   * @returns {string}
+   */
+  readonlyReason() {
+    return readonlyReason({
+      isBinary: this.isBinary,
+      isImage: this.isImage,
+      isTruncated: this.isTruncated,
+      on: this.on,
+      fileError: this.fileError,
+    });
+  }
+
+  /**
    * Recreates the EditorState instance outside render() to preserve GPUI invariants.
    * Reuses the current EditorState when its inputs are unchanged, preserving scroll/selection/fold state across identical reloads.
+   *
+   * @param {boolean} [forceDiskValue=false]
    */
-  rebuildEditor() {
+  rebuildEditor(forceDiskValue = false) {
     if (this.preparedText === null || this.isBinary) {
       this.code?.release();
       this.code = null;
@@ -381,17 +484,19 @@ export default class FileEditor extends View {
     const appSettings = settings() || {};
     const syntax = buildSyntaxTheme(t);
 
-    if (this.code && !this.editorInputsChanged(syntax, appSettings)) {
+    if (this.code && !forceDiskValue && !this.editorInputsChanged(syntax, appSettings)) {
       return;
     }
+
+    const editorValue = forceDiskValue || !this.code ? (this.preparedText ?? "") : this.code.value();
 
     this.code?.release();
     this.code = null;
 
     this.code = EditorState.new({
       language,
-      value: this.preparedText,
-      readonly: true,
+      value: editorValue,
+      readonly: this.isReadonly(),
       line_numbers: true,
       folding: true,
       soft_wrap: this.wrap,
@@ -401,11 +506,147 @@ export default class FileEditor extends View {
     });
     this.editorInputs = {
       file: this.file,
-      text: this.preparedText,
       wrap: this.wrap,
       font: appSettings.font_family,
       syntax: JSON.stringify(syntax),
     };
+    this.setupEditorListeners();
+  }
+
+  /**
+   * Subscribes to EditorState change events.
+   */
+  setupEditorListeners() {
+    if (!this.code) return;
+    this.code.on("change", (_event, cx) => {
+      this.handleEditorChange(cx);
+    });
+  }
+
+  /**
+   * Responds to user text input inside the editor, tracking dirty state and updating line count.
+   *
+   * @param {import("gpui-kit").ViewContext} cx
+   */
+  handleEditorChange(cx) {
+    if (!this.code || this.closed) return;
+    const current = this.code.value();
+    const newDirty = isContentDirty(current, this.rawText);
+    const newLineCount = countLines(current);
+
+    let notifyNeeded = false;
+    if (this.dirty !== newDirty) {
+      this.dirty = newDirty;
+      notifyNeeded = true;
+    }
+    if (this.lineCount !== newLineCount) {
+      this.lineCount = newLineCount;
+      notifyNeeded = true;
+    }
+    if (notifyNeeded) {
+      cx.notify();
+    }
+  }
+
+  /**
+   * Keyboard shortcut listener on the tab container for saving with Cmd+S / Ctrl+S
+   * and toggling soft wrap with Alt+Z / Opt+Z.
+   *
+   * @param {import("gpui-kit").KeyEvent} event
+   * @param {import("gpui-kit").ViewContext} cx
+   */
+  handleKeyDown(event, cx) {
+    const isSave =
+      event.keystroke === "cmd-s" ||
+      event.keystroke === "ctrl-s" ||
+      ((event.modifiers?.platform || event.modifiers?.control) && (event.key === "s" || event.key === "S"));
+
+    if (isSave && !event.is_held) {
+      cx.stop_propagation();
+      this.saveFile(cx);
+      return;
+    }
+
+    const hasPreview = isMarkdownFile(this.file) || this.isSvg;
+    const isCodeView = !this.isImage && (!hasPreview || this.viewMode === "code");
+    const isToggleWrap =
+      event.keystroke === "alt-z" ||
+      event.keystroke === "opt-z" ||
+      event.keystroke === "option-z" ||
+      (Boolean(event.modifiers?.alt) &&
+        !event.modifiers?.platform &&
+        !event.modifiers?.control &&
+        (event.key === "z" || event.key === "Z" || event.key === "Ω" || event.key === "œ"));
+
+    if (isCodeView && isToggleWrap && !event.is_held) {
+      cx.stop_propagation();
+      this.setWrap(!this.wrap, cx);
+    }
+  }
+
+  /**
+   * Saves the current editor content to disk asynchronously off the UI thread.
+   * Employs snapshot matching to prevent overwriting external changes.
+   *
+   * @param {import("gpui-kit").ViewContext} cx
+   */
+  saveFile(cx) {
+    if (this.closed || this.saving || this.isReadonly() || !this.file) return;
+
+    const textToSave = this.code ? this.code.value() : (this.preparedText ?? "");
+    const root = this.root;
+    const file = this.file;
+    const on = this.on;
+    const fullPath = root ? `${root}/${file}` : file;
+    const expectedSnapshot = this.rawText;
+    const { base } = splitPathInfo(file);
+
+    this.saving = true;
+    this.lastSavedText = textToSave;
+    cx.notify();
+
+    cx.spawn(async (cx) => {
+      try {
+        if (on) {
+          await writeRemoteTextFile(fullPath, textToSave, on, expectedSnapshot);
+        } else {
+          await writeTextFile(fullPath, textToSave, expectedSnapshot);
+        }
+        if (this.closed) return;
+        this.rawText = textToSave;
+        this.preparedText = textToSave;
+        this.dirty = this.code ? isContentDirty(this.code.value(), textToSave) : false;
+        this.saving = false;
+        this.fileError = null;
+        this.lineCount = this.code ? countLines(this.code.value()) : countLines(textToSave);
+        notify({
+          title: "Saved",
+          body: base,
+          level: "success",
+          timeout: 1500,
+        });
+      } catch (err) {
+        if (this.closed) return;
+        this.saving = false;
+        const errStr = err?.message || String(err) || "Failed to save file";
+        const isConflict =
+          errStr.includes("stale") ||
+          errStr.includes("mismatch") ||
+          errStr.includes("expected");
+        notify({
+          title: "Save failed",
+          body: isConflict
+            ? "File was modified externally on disk. Refresh to view latest changes."
+            : errStr,
+          level: "blocked",
+          timeout: 3500,
+        });
+      } finally {
+        if (!this.closed) {
+          cx.notify();
+        }
+      }
+    });
   }
 
   /**
@@ -422,7 +663,6 @@ export default class FileEditor extends View {
     if (!prev) return true;
     return (
       prev.file !== this.file ||
-      prev.text !== this.preparedText ||
       prev.wrap !== this.wrap ||
       prev.font !== appSettings.font_family ||
       prev.syntax !== JSON.stringify(syntax)
@@ -438,6 +678,7 @@ export default class FileEditor extends View {
   setWrap(wrap, cx) {
     if (this.wrap === wrap) return;
     this.wrap = wrap;
+    this.explicitWrap = true;
     setShared("file-editor.wrap", wrap);
     this.rebuildEditor();
     cx.notify();
@@ -451,6 +692,13 @@ export default class FileEditor extends View {
    */
   setViewMode(mode, cx) {
     if (this.viewMode === mode) return;
+    if (this.code) {
+      const currentText = this.code.value();
+      this.preparedText = currentText;
+      if (this.isSvg && mode === "preview") {
+        this.loadSvgImage(cx);
+      }
+    }
     this.viewMode = mode;
     if (mode === "code" && !this.code) {
       this.rebuildEditor();
@@ -659,6 +907,8 @@ export default class FileEditor extends View {
       .bg(t.background)
       .text_color(t.foreground)
       .text_size(13)
+      .track_focus(this.focusHandle)
+      .on_key_down((event, cx) => this.handleKeyDown(event, cx))
       .on_mouse_move((event, cx) => this.rememberViewport(event?.bounds, cx))
       .on_mouse_down("left", (event, cx) => this.rememberViewport(event?.bounds, cx))
       .child(
@@ -672,7 +922,22 @@ export default class FileEditor extends View {
           .border_b(1)
           .border_color(t.border)
           .child(image(fileIconPath(base, isLightColor(t.background))).size(14).flex_none())
-          .child(div().min_w(0).font_semibold().text_size(12.5).truncate().child(base))
+          .child(
+            h_flex()
+              .items_center()
+              .gap(6)
+              .min_w(0)
+              .child(div().min_w(0).font_semibold().text_size(12.5).truncate().child(base))
+              .when(this.dirty, (el) =>
+                el.child(
+                  div()
+                    .size(6)
+                    .rounded_full()
+                    .bg(t.accent)
+                    .tooltip("Unsaved changes")
+                )
+              )
+          )
           .when(!this.isImage, (e) =>
             e.child(
               h_flex()
@@ -685,7 +950,8 @@ export default class FileEditor extends View {
                 .text_color(t.muted)
                 .tooltip("Copy file content")
                 .on_click((_e, cx) => {
-                  cx.write_to_clipboard(this.rawText ?? "");
+                  const textToCopy = this.code ? this.code.value() : (this.rawText ?? "");
+                  cx.write_to_clipboard(textToCopy);
                   notify({ title: "File copied", body: base, level: "success", timeout: 1500 });
                 })
                 .child(svg("mods/file-editor/copy.svg").size(12))
@@ -703,16 +969,56 @@ export default class FileEditor extends View {
               .text_color(t.muted)
               .child(lineLabel)
           )
-          .child(
-            div()
-              .flex_none()
-              .px(6)
-              .py(1)
-              .rounded(4)
-              .bg(t.raised)
-              .text_size(10)
-              .text_color(t.dim)
-              .child("Read-only")
+          .when(this.isReadonly(), (e) =>
+            e.child(
+              div()
+                .id("file-editor-readonly")
+                .flex_none()
+                .px(6)
+                .py(1)
+                .rounded(4)
+                .bg(t.raised)
+                .text_size(10)
+                .text_color(t.dim)
+                .tooltip(this.readonlyReason())
+                .child("Read-only")
+            )
+          )
+          .when(!this.isReadonly(), (e) =>
+            e.child(
+              h_flex()
+                .id("file-editor-save")
+                .flex_none()
+                .px(7)
+                .py(2)
+                .items_center()
+                .rounded(4)
+                .text_size(10)
+                .when(this.dirty && !this.saving, (btn) =>
+                  btn
+                    .bg(t.accent)
+                    .text_color(t.background)
+                    .cursor_pointer()
+                    .hover((s) => s.opacity(0.85))
+                    .tooltip("Save changes (Cmd+S)")
+                    .on_click((_e, cx) => this.saveFile(cx))
+                )
+                .when(!this.dirty && !this.saving, (btn) =>
+                  btn
+                    .bg(t.raised)
+                    .text_color(t.dim)
+                    .cursor_default()
+                    .tooltip("No unsaved changes")
+                )
+                .when(this.saving, (btn) =>
+                  btn
+                    .bg(t.raised)
+                    .text_color(t.dim)
+                    .cursor_default()
+                    .tooltip("Saving…")
+                )
+                .child(this.saving ? "Saving…" : "Save")
+            )
           )
           .when(hasPreview, (e) =>
             e.child(
@@ -771,8 +1077,8 @@ export default class FileEditor extends View {
                 .hover((s) => s.bg(this.wrap ? t.selected : t.hover))
                 .tooltip(
                   this.wrap
-                    ? "Wrap long lines to the pane width"
-                    : "Scroll long lines horizontally instead of wrapping"
+                    ? "Wrap long lines to the pane width (Alt+Z)"
+                    : "Scroll long lines horizontally instead of wrapping (Alt+Z)"
                 )
                 .on_click((_e, cx) => this.setWrap(!this.wrap, cx))
                 .child("Wrap")
@@ -788,7 +1094,10 @@ export default class FileEditor extends View {
               .hover((s) => s.bg(t.hover))
               .text_color(t.accent)
               .tooltip("Reload file from disk")
-              .on_click((_e, cx) => this.loadFile(cx))
+              .on_click((_e, cx) => {
+                this.dirty = false;
+                this.loadFile(cx);
+              })
               .child(svg("mods/file-editor/refresh.svg").size(12))
           )
       )
@@ -868,14 +1177,15 @@ export default class FileEditor extends View {
    * @param {import("gpui-kit").ViewContext} cx
    */
   loadSvgImage(cx) {
-    if (typeof this.rawText !== "string") return;
+    const sourceText = this.code ? this.code.value() : this.rawText;
+    if (typeof sourceText !== "string") return;
     const src = this.root ? `${this.root}/${this.file}` : this.file;
     const safe = src.replace(/[^A-Za-z0-9._-]+/g, "_").slice(-120);
     const rel = `cache/file-editor/${safe}-${Date.now()}.svg`;
     const home = appHome();
     const dir = `${home}/cache/file-editor`;
     const fullPath = `${home}/${rel}`;
-    const prepared = this.isTruncated ? null : prepareSvgPreviewInfo(this.rawText);
+    const prepared = this.isTruncated ? null : prepareSvgPreviewInfo(sourceText);
     this.imageLoading = true;
     cx.spawn(async (cx) => {
       let ok = false;

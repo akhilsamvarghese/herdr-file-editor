@@ -303,6 +303,95 @@ export function defaultViewMode(filePath, requestedMode) {
 export const DEFAULT_MAX_CHARS = 400000;
 
 /**
+ * Computes the line count of text to match the editor gutter count.
+ * Trailing newline is subtracted to align with standard line numbering.
+ *
+ * @param {string | null | undefined} text
+ * @returns {number}
+ */
+export function countLines(text) {
+  if (typeof text !== "string" || text === "") return 0;
+  return text.split("\n").length - Number(text.endsWith("\n"));
+}
+
+/**
+ * Checks whether edited text differs from the saved original text.
+ *
+ * @param {string | null | undefined} current
+ * @param {string | null | undefined} original
+ * @returns {boolean}
+ */
+export function isContentDirty(current, original) {
+  if (typeof current !== "string" && typeof original !== "string") return false;
+  return (current ?? "") !== (original ?? "");
+}
+
+/**
+ * Chunks a string into an array of base64 chunks, each within size limits.
+ * Used for safely transferring file text to remote machines over SSH without
+ * exceeding per-argument command line bounds (MAX_ARG_STRLEN).
+ *
+ * @param {string} text - UTF-8 string to encode.
+ * @param {number} [chunkSize=50000] - Maximum character size per base64 chunk.
+ * @returns {string[]}
+ */
+export function encodeBase64Chunks(text, chunkSize = 50000) {
+  if (typeof text !== "string") return [];
+  const b64 = Buffer.from(text, "utf-8").toString("base64");
+  if (b64.length === 0) return [""];
+  const size = Number.isFinite(chunkSize) && chunkSize > 0 ? chunkSize : 50000;
+  const chunks = [];
+  for (let i = 0; i < b64.length; i += size) {
+    chunks.push(b64.slice(i, i + size));
+  }
+  return chunks;
+}
+
+/**
+ * Determines whether a file tab is in read-only mode.
+ * Remote files over SSH are editable via remote execution.
+ *
+ * @param {{
+ *   isBinary?: boolean,
+ *   isImage?: boolean,
+ *   isTruncated?: boolean,
+ *   on?: string | null,
+ *   fileError?: string | null
+ * } | null | undefined} [state]
+ * @returns {boolean}
+ */
+export function isFileReadonly(state) {
+  if (!state) return false;
+  return Boolean(
+    state.isBinary ||
+    state.isImage ||
+    state.isTruncated ||
+    state.fileError
+  );
+}
+
+/**
+ * Explains why a file is read-only.
+ *
+ * @param {{
+ *   isBinary?: boolean,
+ *   isImage?: boolean,
+ *   isTruncated?: boolean,
+ *   on?: string | null,
+ *   fileError?: string | null
+ * } | null | undefined} [state]
+ * @returns {string}
+ */
+export function readonlyReason(state) {
+  if (!state) return "Read-only";
+  if (state.fileError) return state.fileError;
+  if (state.isBinary) return "Binary file cannot be edited";
+  if (state.isImage) return "Image file cannot be edited";
+  if (state.isTruncated) return "File exceeds maximum size and cannot be safely edited";
+  return "Read-only";
+}
+
+/**
  * Prepares file text for rendering: checks for missing file, binary null bytes,
  * line count (subtracting trailing newline to match Editor gutter count), and truncates large files.
  *
@@ -347,7 +436,7 @@ export function prepareFileText(rawText, maxChars = DEFAULT_MAX_CHARS) {
     };
   }
 
-  const lineCount = rawText === "" ? 0 : rawText.split("\n").length - Number(rawText.endsWith("\n"));
+  const lineCount = countLines(rawText);
   const isTruncated = rawText.length > maxChars;
   const text = isTruncated
     ? `${rawText.slice(0, maxChars)}\n… (file truncated)`

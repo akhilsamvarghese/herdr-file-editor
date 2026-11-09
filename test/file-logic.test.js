@@ -14,6 +14,11 @@ import {
   prepareSvgPreviewInfo,
   defaultViewMode,
   prepareFileText,
+  countLines,
+  isContentDirty,
+  encodeBase64Chunks,
+  isFileReadonly,
+  readonlyReason,
   shouldReloadWatchedFile,
   parseMarkdownBlocks,
   buildSyntaxTheme,
@@ -325,6 +330,75 @@ test("prepareFileText - handles missing, binary, normal, trailing newlines, and 
   assert.equal(truncated.error, null);
   assert.equal(truncated.isTruncated, true);
   assert.equal(truncated.text, "a".repeat(50) + "\n… (file truncated)");
+});
+
+test("countLines - computes lines matching editor gutter", () => {
+  assert.equal(countLines(""), 0);
+  assert.equal(countLines("hello"), 1);
+  assert.equal(countLines("hello\n"), 1);
+  assert.equal(countLines("hello\nworld"), 2);
+  assert.equal(countLines("hello\nworld\n"), 2);
+  assert.equal(countLines("\n"), 1);
+  assert.equal(countLines(null), 0);
+  assert.equal(countLines(undefined), 0);
+});
+
+test("isContentDirty - detects unsaved edits accurately", () => {
+  assert.equal(isContentDirty("const a = 1;", "const a = 1;"), false);
+  assert.equal(isContentDirty("const a = 2;", "const a = 1;"), true);
+  assert.equal(isContentDirty("", ""), false);
+  assert.equal(isContentDirty("something", ""), true);
+  assert.equal(isContentDirty(null, null), false);
+  assert.equal(isContentDirty(undefined, undefined), false);
+  assert.equal(isContentDirty("text", null), true);
+});
+
+test("isFileReadonly & readonlyReason - identifies uneditable files with descriptive reasons", () => {
+  // Normal local file -> editable
+  assert.equal(isFileReadonly({}), false);
+  assert.equal(isFileReadonly(null), false);
+  assert.equal(isFileReadonly({ isBinary: false, isImage: false, isTruncated: false, on: null, fileError: null }), false);
+  assert.equal(readonlyReason({}), "Read-only");
+
+  // Binary file
+  assert.equal(isFileReadonly({ isBinary: true }), true);
+  assert.equal(readonlyReason({ isBinary: true }), "Binary file cannot be edited");
+
+  // Image file
+  assert.equal(isFileReadonly({ isImage: true }), true);
+  assert.equal(readonlyReason({ isImage: true }), "Image file cannot be edited");
+
+  // Truncated large file
+  assert.equal(isFileReadonly({ isTruncated: true }), true);
+  assert.equal(readonlyReason({ isTruncated: true }), "File exceeds maximum size and cannot be safely edited");
+
+  // Remote files over SSH are editable
+  assert.equal(isFileReadonly({ on: "server-1" }), false);
+  assert.equal(isFileReadonly({ on: "server-1", isBinary: true }), true);
+
+  // File error
+  assert.equal(isFileReadonly({ fileError: "Not found" }), true);
+  assert.equal(readonlyReason({ fileError: "Not found" }), "Not found");
+});
+
+test("encodeBase64Chunks - encodes text into bounded base64 chunks", () => {
+  assert.deepEqual(encodeBase64Chunks(""), [""]);
+  assert.deepEqual(encodeBase64Chunks(null), []);
+  assert.deepEqual(encodeBase64Chunks(undefined), []);
+
+  const simple = encodeBase64Chunks("hello world");
+  assert.equal(Buffer.from(simple.join(""), "base64").toString("utf-8"), "hello world");
+
+  const text = "A".repeat(120);
+  const chunks = encodeBase64Chunks(text, 50);
+  assert.ok(chunks.length > 1);
+  assert.ok(chunks.every((c) => c.length <= 50));
+  assert.equal(Buffer.from(chunks.join(""), "base64").toString("utf-8"), text);
+
+  // Unicode text
+  const unicode = "Hello, 世界! 🚀\nLine 2 with special chars: ' \" ` $";
+  const uniChunks = encodeBase64Chunks(unicode, 16);
+  assert.equal(Buffer.from(uniChunks.join(""), "base64").toString("utf-8"), unicode);
 });
 
 test("shouldReloadWatchedFile - filters batch change events accurately", () => {
